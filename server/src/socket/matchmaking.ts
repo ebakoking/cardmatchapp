@@ -374,50 +374,49 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
     },
   );
 
-  // Kartları yeniden isteme (kartlar ekranda yükleniyor'da kalmasın diye)
+  // ========== PULL-BASED CARDS HANDSHAKE ==========
+  // Client navigates to CardGateScreen, then requests cards
+  // Server responds with cards:deliver or cards:error
   socket.on(
     'cards:request',
     (payload: { matchId: string; userId: string }) => {
       const { matchId, userId } = payload;
-      console.log('[Matchmaking] ========== CARDS REQUEST ==========');
-      console.log('[Matchmaking] matchId:', matchId);
-      console.log('[Matchmaking] userId:', userId);
-      console.log('[Matchmaking] socketId:', socket.id);
-      console.log('[Matchmaking] Active games count:', cardGames.size);
-      console.log('[Matchmaking] Active game IDs:', Array.from(cardGames.keys()));
+      console.log('[Cards] ========== CARDS REQUEST ==========');
+      console.log('[Cards] matchId:', matchId);
+      console.log('[Cards] userId:', userId);
+      console.log('[Cards] socketId:', socket.id);
+      console.log('[Cards] Active games:', Array.from(cardGames.keys()));
       
+      // Game'i bul
       const game = cardGames.get(matchId);
       if (!game) {
-        console.log('[Matchmaking] ERROR: Game not found for matchId:', matchId);
-        // Kullanıcıya hata bildir
+        console.log('[Cards] ERROR: Game not found');
         socket.emit('cards:error', { 
           matchId, 
-          error: 'Game not found',
+          reason: 'no_active_match',
           message: 'Oyun bulunamadı. Lütfen yeniden eşleşme arayın.' 
         });
         return;
       }
       
-      console.log('[Matchmaking] Game found:', {
-        matchId: game.matchId,
-        user1Id: game.user1Id,
-        user2Id: game.user2Id,
-        cardsCount: game.cards.length,
-      });
-      
+      // User authorized mı?
       if (userId !== game.user1Id && userId !== game.user2Id) {
-        console.log('[Matchmaking] ERROR: User not in game:', { userId, game_user1: game.user1Id, game_user2: game.user2Id });
+        console.log('[Cards] ERROR: User not authorized');
         socket.emit('cards:error', { 
           matchId, 
-          error: 'User not in game',
+          reason: 'unauthorized',
           message: 'Bu oyunda değilsiniz.' 
         });
         return;
       }
 
-      console.log('[Matchmaking] SUCCESS: Sending cards:init to socket:', socket.id, 'cards count:', game.cards.length);
-      socket.emit('cards:init', { cards: game.cards });
-      console.log('[Matchmaking] cards:init sent successfully');
+      // Kartları gönder
+      console.log('[Cards] SUCCESS: Delivering', game.cards.length, 'cards');
+      socket.emit('cards:deliver', { 
+        matchId, 
+        cards: game.cards 
+      });
+      console.log('[Cards] cards:deliver sent');
     },
   );
 
@@ -677,30 +676,8 @@ async function tryMatch(io: Server) {
       socketA?.emit('match:found', matchFoundPayloadA);
       socketB?.emit('match:found', matchFoundPayloadB);
 
-      console.log('[Matchmaking] match:found emitted to both users (room + direct)');
-
-      // Kısa gecikme ile cards:init gönder - client'ın CardGateScreen'e navigate etmesi için zaman ver
-      setTimeout(() => {
-        console.log('[Matchmaking] ========== SENDING CARDS ==========');
-        console.log('[Matchmaking] Game still exists:', cardGames.has(match.id));
-        
-        const cardsPayload = { cards };
-        
-        // Room'a emit
-        io.to(userA.id).emit('cards:init', cardsPayload);
-        io.to(userB.id).emit('cards:init', cardsPayload);
-        
-        // Direkt socket'e de emit (backup) - socket hala varsa
-        const currentSocketA = io.sockets.sockets.get(a.socketId);
-        const currentSocketB = io.sockets.sockets.get(b.socketId);
-        
-        currentSocketA?.emit('cards:init', cardsPayload);
-        currentSocketB?.emit('cards:init', cardsPayload);
-        
-        console.log('[Matchmaking] cards:init emitted to both users (room + direct)');
-        console.log('[Matchmaking] Socket A still connected:', !!currentSocketA);
-        console.log('[Matchmaking] Socket B still connected:', !!currentSocketB);
-      }, 800); // 500ms'den 800ms'ye çıkardık
+      console.log('[Matchmaking] match:found emitted to both users');
+      console.log('[Matchmaking] Cards will be delivered via cards:request handshake (pull-based)');
 
       matchmakingQueue.splice(j, 1);
       matchmakingQueue.splice(i, 1);

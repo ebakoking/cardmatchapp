@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { ChatStackParamList } from '../../navigation';
@@ -15,6 +15,17 @@ interface MatchEndedPayload {
   message?: string;
 }
 
+interface CardsDeliverPayload {
+  matchId: string;
+  cards: Card[];
+}
+
+interface CardsErrorPayload {
+  matchId: string;
+  reason: string;
+  message: string;
+}
+
 type Props = NativeStackScreenProps<ChatStackParamList, 'CardGate'>;
 
 interface Card {
@@ -28,31 +39,53 @@ const CardGateScreen: React.FC<Props> = ({ route, navigation }) => {
   const [cards, setCards] = useState<Card[]>([]);
   const [index, setIndex] = useState(0);
   const [loadingError, setLoadingError] = useState(false);
+  const [isRequesting, setIsRequesting] = useState(false);
   const { user } = useAuth();
+  
+  // Ref to track if cards received (for timeout callbacks)
+  const cardsReceivedRef = useRef(false);
+
+  // Request cards function
+  const requestCards = useCallback(() => {
+    if (!user || !matchId) return;
+    
+    const socket = getSocket();
+    console.log('[CardGate] Emitting cards:request:', { matchId, userId: user.id });
+    setIsRequesting(true);
+    socket.emit('cards:request', { matchId, userId: user.id });
+  }, [matchId, user]);
 
   useEffect(() => {
     const socket = getSocket();
     console.log('[CardGate] ========== SCREEN MOUNTED ==========');
     console.log('[CardGate] matchId:', matchId);
     console.log('[CardGate] userId:', user?.id);
-    console.log('[CardGate] socket connected:', socket.connected);
+    console.log('[CardGate] socket.id:', socket.id);
+    console.log('[CardGate] socket.connected:', socket.connected);
 
-    // cards:init event handler
-    const handleCardsInit = (payload: { cards: Card[] }) => {
-      console.log('[CardGate] cards:init received:', payload.cards?.length, 'cards');
-      if (payload.cards && payload.cards.length > 0) {
+    // ========== EVENT HANDLERS ==========
+    
+    // cards:deliver - kartlar geldi (pull-based handshake)
+    const handleCardsDeliver = (payload: CardsDeliverPayload) => {
+      console.log('[CardGate] cards:deliver received:', payload.matchId, payload.cards?.length, 'cards');
+      if (payload.matchId === matchId && payload.cards && payload.cards.length > 0) {
+        cardsReceivedRef.current = true;
         setCards(payload.cards);
         setLoadingError(false);
+        setIsRequesting(false);
       }
     };
 
-    // cards:error event handler
-    const handleCardsError = (payload: { matchId: string; error: string; message: string }) => {
+    // cards:error - hata oluştu
+    const handleCardsError = (payload: CardsErrorPayload) => {
       console.log('[CardGate] cards:error received:', payload);
-      setLoadingError(true);
+      if (payload.matchId === matchId) {
+        setLoadingError(true);
+        setIsRequesting(false);
+      }
     };
 
-    // chat:unlocked event handler
+    // chat:unlocked - sohbet açıldı
     const handleChatUnlocked = (payload: {
       sessionId: string;
       partnerId: string;
@@ -66,7 +99,7 @@ const CardGateScreen: React.FC<Props> = ({ route, navigation }) => {
       });
     };
 
-    // match:ended event handler
+    // match:ended - eşleşme sona erdi
     const handleMatchEnded = (payload: MatchEndedPayload) => {
       console.log('[CardGate] match:ended received:', payload);
       
@@ -86,9 +119,7 @@ const CardGateScreen: React.FC<Props> = ({ route, navigation }) => {
             text: 'Yeni Eşleşme Ara',
             onPress: () => {
               navigation.popToTop();
-              setTimeout(() => {
-                navigation.navigate('MatchQueue');
-              }, 300);
+              setTimeout(() => navigation.navigate('MatchQueue'), 300);
             },
           },
           {
@@ -100,50 +131,49 @@ const CardGateScreen: React.FC<Props> = ({ route, navigation }) => {
       );
     };
 
-    // Event listeners
-    socket.on('cards:init', handleCardsInit);
+    // ========== REGISTER LISTENERS FIRST ==========
+    socket.on('cards:deliver', handleCardsDeliver);
     socket.on('cards:error', handleCardsError);
     socket.on('chat:unlocked', handleChatUnlocked);
     socket.on('match:ended', handleMatchEnded);
+    
+    console.log('[CardGate] Event listeners registered');
 
-    // Kartları iste
-    if (user) {
-      console.log('[CardGate] Emitting cards:request for matchId:', matchId);
-      socket.emit('cards:request', { matchId, userId: user.id });
+    // ========== THEN REQUEST CARDS ==========
+    if (user && matchId) {
+      // İlk istek - hemen
+      requestCards();
       
-      // Retry 1: 1 saniye sonra
+      // Retry 1: 2 saniye sonra (eğer kartlar henüz gelmediyse)
       const retryTimeout1 = setTimeout(() => {
-        if (cards.length === 0) {
-          console.log('[CardGate] Retry 1: cards:request...');
-          socket.emit('cards:request', { matchId, userId: user.id });
+        if (!cardsReceivedRef.current) {
+          console.log('[CardGate] Retry 1: cards not received yet');
+          requestCards();
         }
-      }, 1000);
+      }, 2000);
       
-      // Retry 2: 3 saniye sonra
+      // Retry 2: 5 saniye sonra
       const retryTimeout2 = setTimeout(() => {
-        if (cards.length === 0) {
-          console.log('[CardGate] Retry 2: cards:request...');
-          socket.emit('cards:request', { matchId, userId: user.id });
+        if (!cardsReceivedRef.current) {
+          console.log('[CardGate] Retry 2: cards still not received');
+          requestCards();
         }
-      }, 3000);
+      }, 5000);
       
       // Timeout: 10 saniye sonra hata göster
       const errorTimeout = setTimeout(() => {
-        console.log('[CardGate] TIMEOUT: Cards not received after 10 seconds');
-        console.log('[CardGate] Debug info:', {
-          matchId,
-          userId: user.id,
-          socketConnected: socket.connected,
-          socketId: socket.id,
-        });
-        setLoadingError(true);
+        if (!cardsReceivedRef.current) {
+          console.log('[CardGate] TIMEOUT: Cards not received after 10 seconds');
+          setLoadingError(true);
+          setIsRequesting(false);
+        }
       }, 10000);
       
       return () => {
         clearTimeout(retryTimeout1);
         clearTimeout(retryTimeout2);
         clearTimeout(errorTimeout);
-        socket.off('cards:init', handleCardsInit);
+        socket.off('cards:deliver', handleCardsDeliver);
         socket.off('cards:error', handleCardsError);
         socket.off('chat:unlocked', handleChatUnlocked);
         socket.off('match:ended', handleMatchEnded);
@@ -151,12 +181,12 @@ const CardGateScreen: React.FC<Props> = ({ route, navigation }) => {
     }
 
     return () => {
-      socket.off('cards:init', handleCardsInit);
+      socket.off('cards:deliver', handleCardsDeliver);
       socket.off('cards:error', handleCardsError);
       socket.off('chat:unlocked', handleChatUnlocked);
       socket.off('match:ended', handleMatchEnded);
     };
-  }, [matchId, navigation, user]);
+  }, [matchId, navigation, user, requestCards]);
 
   const current = cards[index];
   const total = cards.length || 5;
@@ -189,14 +219,18 @@ const CardGateScreen: React.FC<Props> = ({ route, navigation }) => {
         <TouchableOpacity 
           style={styles.retryButton} 
           onPress={() => {
+            console.log('[CardGate] Retry button pressed');
             setLoadingError(false);
-            const socket = getSocket();
-            if (user) {
-              socket.emit('cards:request', { matchId, userId: user.id });
-            }
+            cardsReceivedRef.current = false;
+            requestCards();
           }}
+          disabled={isRequesting}
         >
-          <Text style={FONTS.button}>Tekrar Dene</Text>
+          {isRequesting ? (
+            <ActivityIndicator color={COLORS.text} />
+          ) : (
+            <Text style={FONTS.button}>Tekrar Dene</Text>
+          )}
         </TouchableOpacity>
         <TouchableOpacity 
           style={[styles.retryButton, { backgroundColor: COLORS.surface, marginTop: SPACING.md }]} 
@@ -212,7 +246,8 @@ const CardGateScreen: React.FC<Props> = ({ route, navigation }) => {
   if (!current) {
     return (
       <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-        <Text style={FONTS.body}>Kartlar yükleniyor...</Text>
+        <ActivityIndicator size="large" color={COLORS.primary} />
+        <Text style={[FONTS.body, { marginTop: SPACING.md }]}>Kartlar yükleniyor...</Text>
         <Text style={[FONTS.caption, { marginTop: SPACING.sm, color: COLORS.textMuted }]}>
           Lütfen bekleyin...
         </Text>
