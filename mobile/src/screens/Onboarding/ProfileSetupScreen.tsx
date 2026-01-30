@@ -351,8 +351,6 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
               ]}
               value={nickname}
               onChangeText={handleNicknameChange}
-              placeholder="örn: mavi_ay, gecekuşu"
-              placeholderTextColor={COLORS.textMuted}
               autoCapitalize="none"
               autoCorrect={false}
               returnKeyType="done"
