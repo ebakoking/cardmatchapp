@@ -11,11 +11,11 @@ import {
   Platform,
   Modal,
   Keyboard,
-  TouchableWithoutFeedback,
   ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { CommonActions } from '@react-navigation/native';
 import { AuthStackParamList } from '../../navigation';
 import { COLORS } from '../../theme/colors';
 import { FONTS } from '../../theme/fonts';
@@ -30,7 +30,7 @@ type Props = NativeStackScreenProps<AuthStackParamList, 'ProfileSetup'>;
 const TOTAL_STEPS = 3;
 
 const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
-  const { refreshProfile } = useAuth();
+  const { refreshProfile, logout } = useAuth();
   
   // Multi-step state
   const [currentStep, setCurrentStep] = useState(1);
@@ -128,6 +128,8 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
 
   // Nickname kontrolü (debounce)
   useEffect(() => {
+    console.log('[ProfileSetup] Nickname changed:', nickname, 'length:', nickname.length);
+    
     if (nickname.length < 3) {
       setNicknameStatus('idle');
       return;
@@ -135,14 +137,16 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
 
     const timer = setTimeout(async () => {
       try {
+        console.log('[ProfileSetup] Checking nickname:', nickname);
         setNicknameStatus('checking');
         const res = await api.get('/api/user/check-nickname', {
           params: { nickname },
         });
+        console.log('[ProfileSetup] Nickname check response:', res.data);
         setNicknameStatus(res.data.available ? 'available' : 'taken');
-      } catch (error) {
+      } catch (error: any) {
         // API hatası durumunda kullanılabilir kabul et (yeni kullanıcı için)
-        console.log('Nickname check failed, assuming available:', error);
+        console.log('[ProfileSetup] Nickname check failed:', error?.response?.status, error?.message);
         setNicknameStatus('available');
       }
     }, 500);
@@ -152,6 +156,7 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
 
   // Sonraki adıma geç
   const nextStep = () => {
+    dismissKeyboard();
     if (currentStep < TOTAL_STEPS) {
       setCurrentStep(currentStep + 1);
     } else {
@@ -161,16 +166,51 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
 
   // Önceki adıma dön
   const prevStep = () => {
+    dismissKeyboard();
     if (currentStep > 1) {
       setCurrentStep(currentStep - 1);
     }
+  };
+
+  // Klavyeyi kapat
+  const dismissKeyboard = () => {
+    Keyboard.dismiss();
+  };
+
+  // Çıkış yap (Landing ekranına dön)
+  const handleLogout = () => {
+    dismissKeyboard();
+    Alert.alert(
+      'Çıkış Yap',
+      'Emin misin? Giriş ekranına döneceksin.',
+      [
+        { text: 'İptal', style: 'cancel' },
+        { 
+          text: 'Çıkış Yap', 
+          style: 'destructive',
+          onPress: async () => {
+            // Önce logout yap
+            await logout();
+            // Sonra navigation stack'i sıfırla
+            navigation.dispatch(
+              CommonActions.reset({
+                index: 0,
+                routes: [{ name: 'Landing' }],
+              })
+            );
+          },
+        },
+      ]
+    );
   };
 
   // Her adımın geçerliliğini kontrol et
   const isStepValid = () => {
     switch (currentStep) {
       case 1:
-        return nickname.length >= 3 && nicknameStatus === 'available';
+        const step1Valid = nickname.length >= 3 && nicknameStatus === 'available';
+        console.log('[ProfileSetup] Step 1 validation:', { nickname, nicknameStatus, valid: step1Valid });
+        return step1Valid;
       case 2:
         return calculatedAge !== null && calculatedAge >= 18 && zodiacSign !== null;
       case 3:
@@ -251,70 +291,106 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
   );
 
   // Adım 1: Kullanıcı Adı
-  const renderStep1 = () => (
-    <View style={styles.stepContent}>
-      <Text style={styles.stepEmoji}>👤</Text>
-      <Text style={styles.stepTitle}>Nasıl çağıralım?</Text>
-      <Text style={styles.stepSubtitle}>
-        Kendine havalı bir kullanıcı adı seç
-      </Text>
+  const renderStep1 = () => {
+    // Nickname validasyonu (boşluk ve karakter limiti)
+    const handleNicknameChange = (text: string) => {
+      // Boşluk ve özel karakterleri kaldır, max 15 karakter
+      const cleaned = text.replace(/\s/g, '').replace(/[^a-zA-Z0-9_]/g, '').slice(0, 15);
+      setNickname(cleaned);
+    };
 
-      <View style={styles.inputContainer}>
-        <TextInput
-          style={[
-            styles.input,
-            nicknameStatus === 'taken' && styles.inputError,
-            nicknameStatus === 'available' && styles.inputSuccess,
-          ]}
-          value={nickname}
-          onChangeText={setNickname}
-          placeholder="Kullanıcı adı"
-          placeholderTextColor={COLORS.textMuted}
-          autoCapitalize="none"
-          autoCorrect={false}
-          autoFocus
-        />
-        
-        {nicknameStatus === 'checking' && (
-          <ActivityIndicator 
-            style={styles.inputIcon} 
-            size="small" 
-            color={COLORS.primary} 
-          />
-        )}
-        {nicknameStatus === 'available' && (
-          <Text style={styles.inputIconSuccess}>✓</Text>
-        )}
-        {nicknameStatus === 'taken' && (
-          <Text style={styles.inputIconError}>✗</Text>
-        )}
-      </View>
+    return (
+      <ScrollView 
+        style={styles.stepScrollView}
+        contentContainerStyle={styles.stepScrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <View 
+          style={styles.dismissArea}
+          onStartShouldSetResponder={() => true}
+          onResponderRelease={dismissKeyboard}
+        >
+          <Text style={styles.stepEmoji}>👤</Text>
+          <Text style={styles.stepTitle}>Seni nasıl tanısınlar?</Text>
+          <Text style={styles.stepSubtitle}>
+            Gerçek adın olmak zorunda değil.
+          </Text>
+          <Text style={styles.stepSubtitleSecondary}>
+            İstediğin zaman değiştirebilirsin.
+          </Text>
 
-      {nicknameStatus === 'taken' && (
-        <Text style={styles.errorText}>
-          Bu kullanıcı adı daha önce alınmış, lütfen farklı bir nickname seç.
-        </Text>
-      )}
-      {nicknameStatus === 'available' && (
-        <Text style={styles.successText}>
-          Harika seçim! Bu isim müsait ✨
-        </Text>
-      )}
-      {nickname.length > 0 && nickname.length < 3 && (
-        <Text style={styles.hintText}>
-          En az 3 karakter olmalı
-        </Text>
-      )}
-    </View>
-  );
+          <View style={styles.inputContainer}>
+            <TextInput
+              style={[
+                styles.input,
+                nicknameStatus === 'taken' && styles.inputError,
+                nicknameStatus === 'available' && styles.inputSuccess,
+              ]}
+              value={nickname}
+              onChangeText={handleNicknameChange}
+              placeholder="örn: mavi_ay, gecekuşu"
+              placeholderTextColor={COLORS.textMuted}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="done"
+              onSubmitEditing={dismissKeyboard}
+              maxLength={15}
+            />
+            
+            {nicknameStatus === 'checking' && (
+              <ActivityIndicator 
+                style={styles.inputIcon} 
+                size="small" 
+                color={COLORS.primary} 
+              />
+            )}
+            {nicknameStatus === 'available' && (
+              <Text style={styles.inputIconSuccess}>✓</Text>
+            )}
+            {nicknameStatus === 'taken' && (
+              <Text style={styles.inputIconError}>✗</Text>
+            )}
+          </View>
+
+          {/* Input kuralları */}
+          <Text style={styles.inputRules}>
+            3–15 karakter · Boşluk yok · Harf, rakam ve _ kullanabilirsin
+          </Text>
+
+          {/* Durum mesajları */}
+          {nicknameStatus === 'taken' && (
+            <Text style={styles.errorText}>
+              Bu isim alınmış, başka bir tane dene.
+            </Text>
+          )}
+          {nicknameStatus === 'available' && nickname.length >= 3 && (
+            <Text style={styles.successText}>
+              ✓ Kullanılabilir
+            </Text>
+          )}
+          {nickname.length > 0 && nickname.length < 3 && (
+            <Text style={styles.hintText}>
+              En az 3 karakter olmalı
+            </Text>
+          )}
+        </View>
+      </ScrollView>
+    );
+  };
 
   // Adım 2: Doğum Tarihi + Burç
   const renderStep2 = () => (
-    <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-      <ScrollView 
-        style={styles.stepScrollView} 
-        contentContainerStyle={styles.stepScrollContent}
-        keyboardShouldPersistTaps="handled"
+    <ScrollView 
+      style={styles.stepScrollView} 
+      contentContainerStyle={styles.stepScrollContent}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+    >
+      <View 
+        style={styles.dismissArea}
+        onStartShouldSetResponder={() => true}
+        onResponderRelease={dismissKeyboard}
       >
         <Text style={styles.stepEmoji}>🎂</Text>
         <Text style={styles.stepTitle}>Doğum Tarihin</Text>
@@ -334,7 +410,7 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
               keyboardType="number-pad"
               maxLength={2}
               returnKeyType="next"
-              onSubmitEditing={Keyboard.dismiss}
+              onSubmitEditing={dismissKeyboard}
             />
           </View>
 
@@ -349,7 +425,7 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
               keyboardType="number-pad"
               maxLength={2}
               returnKeyType="next"
-              onSubmitEditing={Keyboard.dismiss}
+              onSubmitEditing={dismissKeyboard}
             />
           </View>
 
@@ -362,7 +438,7 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
                 setBirthYear(v.replace(/[^0-9]/g, '').slice(0, 4));
                 // Yıl tamamlandığında klavyeyi kapat
                 if (v.length === 4) {
-                  setTimeout(() => Keyboard.dismiss(), 100);
+                  setTimeout(dismissKeyboard, 100);
                 }
               }}
               placeholder="1990"
@@ -370,7 +446,7 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
               keyboardType="number-pad"
               maxLength={4}
               returnKeyType="done"
-              onSubmitEditing={Keyboard.dismiss}
+              onSubmitEditing={dismissKeyboard}
             />
           </View>
         </View>
@@ -396,8 +472,8 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
             </Text>
           </View>
         )}
-      </ScrollView>
-    </TouchableWithoutFeedback>
+      </View>
+    </ScrollView>
   );
 
   // Adım 3: Cinsiyet
@@ -492,14 +568,26 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
         {/* Header */}
         <View style={styles.header}>
           {currentStep > 1 ? (
-            <TouchableOpacity onPress={prevStep} style={styles.backTouchable}>
+            <TouchableOpacity 
+              onPress={prevStep} 
+              style={styles.backTouchable}
+              hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
+              activeOpacity={0.7}
+            >
               <Text style={styles.backButton}>← Geri</Text>
             </TouchableOpacity>
           ) : (
-            <View style={{ width: 70 }} />
+            <TouchableOpacity 
+              onPress={handleLogout} 
+              style={styles.backTouchable}
+              hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.logoutButton}>✕ Çıkış</Text>
+            </TouchableOpacity>
           )}
           <Text style={styles.stepIndicator}>
-            {currentStep} / {TOTAL_STEPS}
+            {currentStep} / {TOTAL_STEPS} · {currentStep === 1 ? '30 sn' : currentStep === 2 ? '20 sn' : '10 sn'}
           </Text>
           <View style={{ width: 70 }} />
         </View>
@@ -531,6 +619,12 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
               </Text>
             )}
           </TouchableOpacity>
+          {/* Step 1 için micro-copy */}
+          {currentStep === 1 && (
+            <Text style={styles.ctaMicroCopy}>
+              Bu isim sohbetlerde görünecek
+            </Text>
+          )}
         </View>
 
         {renderLocationModal()}
@@ -560,6 +654,10 @@ const styles = StyleSheet.create({
   backButton: {
     ...FONTS.body,
     color: COLORS.primary,
+  },
+  logoutButton: {
+    ...FONTS.body,
+    color: COLORS.textMuted,
   },
   stepIndicator: {
     ...FONTS.caption,
@@ -594,9 +692,15 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   stepScrollContent: {
+    flexGrow: 1,
     alignItems: 'center',
     paddingTop: SPACING.xl,
     paddingBottom: SPACING.xl * 2,
+  },
+  dismissArea: {
+    flex: 1,
+    width: '100%',
+    alignItems: 'center',
   },
   stepEmoji: {
     fontSize: 60,
@@ -612,7 +716,14 @@ const styles = StyleSheet.create({
     ...FONTS.body,
     color: COLORS.textMuted,
     textAlign: 'center',
+    marginBottom: SPACING.xs,
+  },
+  stepSubtitleSecondary: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+    textAlign: 'center',
     marginBottom: SPACING.xl,
+    opacity: 0.8,
   },
   // Input styles
   inputContainer: {
@@ -657,6 +768,13 @@ const styles = StyleSheet.create({
     marginTop: -12,
     fontSize: 24,
     color: COLORS.danger,
+  },
+  inputRules: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+    marginTop: SPACING.sm,
+    opacity: 0.7,
   },
   errorText: {
     ...FONTS.caption,
@@ -784,6 +902,13 @@ const styles = StyleSheet.create({
     ...FONTS.button,
     color: COLORS.background,
     fontSize: 18,
+  },
+  ctaMicroCopy: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+    marginTop: SPACING.sm,
+    opacity: 0.8,
   },
   // Modal styles
   modalOverlay: {

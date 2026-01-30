@@ -236,7 +236,8 @@ router.post(
 );
 
 // Check nickname availability
-router.get('/check-nickname', authMiddleware, async (req: any, res) => {
+// Check-nickname - Auth opsiyonel (onboarding için)
+router.get('/check-nickname', async (req: any, res) => {
   const { nickname } = req.query;
   if (!nickname || typeof nickname !== 'string') {
     return res.status(400).json({
@@ -245,10 +246,23 @@ router.get('/check-nickname', authMiddleware, async (req: any, res) => {
     });
   }
 
+  // Auth header varsa userId'yi al, yoksa null
+  let excludeUserId: string | null = null;
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith('Bearer ')) {
+    try {
+      const token = authHeader.slice(7);
+      const payload = verifyJwt(token);
+      excludeUserId = payload.userId;
+    } catch {
+      // Token geçersiz olsa da devam et
+    }
+  }
+
   const existing = await prisma.user.findFirst({
     where: {
       nickname,
-      id: { not: req.user.userId },
+      ...(excludeUserId ? { id: { not: excludeUserId } } : {}),
     },
   });
 

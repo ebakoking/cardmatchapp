@@ -3,14 +3,21 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useAuth } from '../context/AuthContext';
+
+// Auth Screens
+import LandingScreen from '../screens/Auth/LandingScreen';
+import EmailAuthScreen from '../screens/Auth/EmailAuthScreen';
 import PhoneVerificationScreen from '../screens/Onboarding/PhoneVerificationScreen';
+
+// Onboarding Screens
 import ProfileSetupScreen from '../screens/Onboarding/ProfileSetupScreen';
 import PhotoUploadScreen from '../screens/Onboarding/PhotoUploadScreen';
 import BioInputScreen from '../screens/Onboarding/BioInputScreen';
 import VerificationVideoScreen from '../screens/Onboarding/VerificationVideoScreen';
 import TutorialScreen from '../screens/Onboarding/TutorialScreen';
 import AvatarSelectionScreen from '../screens/Onboarding/AvatarSelectionScreen';
-import SocialAuthScreen from '../screens/Onboarding/SocialAuthScreen';
+
+// Main Screens
 import HomeScreen from '../screens/Home/HomeScreen';
 import MatchQueueScreen from '../screens/Match/MatchQueueScreen';
 import CardGateScreen from '../screens/Match/CardGateScreen';
@@ -25,8 +32,11 @@ import LeaderboardScreen from '../screens/Leaderboard/LeaderboardScreen';
 import SubscriptionScreen from '../screens/Subscription/SubscriptionScreen';
 import TokenPurchaseScreen from '../screens/Subscription/TokenPurchaseScreen';
 
+// ============ TYPE DEFINITIONS ============
+
 export type AuthStackParamList = {
-  SocialAuth: undefined;
+  Landing: undefined;
+  EmailAuth: undefined;
   PhoneVerification: undefined;
   ProfileSetup: undefined;
   PhotoUpload: undefined;
@@ -83,12 +93,16 @@ export type ProfileStackParamList = {
   AvatarSelection: undefined;
 };
 
+// ============ NAVIGATORS ============
+
 const AuthStack = createNativeStackNavigator<AuthStackParamList>();
 const ChatStack = createNativeStackNavigator<ChatStackParamList>();
 const FriendsStack = createNativeStackNavigator<FriendsStackParamList>();
 const SubscriptionStack = createNativeStackNavigator<SubscriptionStackParamList>();
 const ProfileStack = createNativeStackNavigator<ProfileStackParamList>();
 const Tab = createBottomTabNavigator<MainTabParamList>();
+
+// ============ STACK NAVIGATORS ============
 
 function ChatStackNavigator() {
   return (
@@ -142,16 +156,18 @@ function MainTabs() {
   );
 }
 
+// ============ ROOT NAVIGATOR ============
+
 export function RootNavigator() {
   const { user, loading, onboardingCompleted } = useAuth();
 
   if (loading) return null;
 
-  // Kullanıcının gerçekten profil oluşturup oluşturmadığını kontrol et
+  // Profil kurulumu tamamlandı mı kontrol et
   const hasDefaultNickname = user?.nickname?.startsWith('user_') || 
-                              user?.nickname?.startsWith('apple_user_') || 
-                              user?.nickname?.startsWith('google_user_') ||
-                              user?.nickname?.startsWith('apple_');
+                              user?.nickname?.startsWith('apple_') || 
+                              user?.nickname?.startsWith('google_') ||
+                              user?.nickname?.startsWith('email_');
   
   const hasCompletedProfile = !!(
     user &&
@@ -164,35 +180,41 @@ export function RootNavigator() {
     user.interestedIn
   );
 
-  // ÖNEMLİ: Eğer kullanıcı tutorial'ı bitirdiyse (onboardingCompleted = true),
-  // profil kontrolünü bypass et. Tutorial'a kadar geldiyse profil zaten doldurulmuştur.
-  // Bu, refreshProfile'ın gecikmeli çalışması durumunda bile uygulamaya geçişi sağlar.
+  // Onboarding kontrolü
   const isOnboarded = onboardingCompleted || hasCompletedProfile;
   
-  console.log('[Navigation] isOnboarded:', isOnboarded, 'hasCompletedProfile:', hasCompletedProfile, 'onboardingCompleted:', onboardingCompleted, 'user:', user?.nickname);
+  console.log('[Navigation] user:', user?.nickname, 'isOnboarded:', isOnboarded, 'hasCompletedProfile:', hasCompletedProfile);
 
   return (
     <NavigationContainer>
-      {!user || !isOnboarded ? (
+      {!user ? (
+        // Kullanıcı giriş yapmamış - Auth akışı
         <AuthStack.Navigator screenOptions={{ headerShown: false }}>
-          <AuthStack.Screen name="SocialAuth" component={SocialAuthScreen} />
-          <AuthStack.Screen
-            name="PhoneVerification"
-            component={PhoneVerificationScreen}
-          />
+          <AuthStack.Screen name="Landing" component={LandingScreen} />
+          <AuthStack.Screen name="EmailAuth" component={EmailAuthScreen} />
+          <AuthStack.Screen name="PhoneVerification" component={PhoneVerificationScreen} />
           <AuthStack.Screen name="ProfileSetup" component={ProfileSetupScreen} />
           <AuthStack.Screen name="PhotoUpload" component={PhotoUploadScreen} />
           <AuthStack.Screen name="BioInput" component={BioInputScreen} />
-          <AuthStack.Screen
-            name="VerificationVideo"
-            component={VerificationVideoScreen}
-          />
+          <AuthStack.Screen name="VerificationVideo" component={VerificationVideoScreen} />
+          <AuthStack.Screen name="Tutorial" component={TutorialScreen} />
+        </AuthStack.Navigator>
+      ) : !isOnboarded ? (
+        // Kullanıcı giriş yapmış ama profil tamamlanmamış - Onboarding
+        <AuthStack.Navigator screenOptions={{ headerShown: false }} initialRouteName="ProfileSetup">
+          <AuthStack.Screen name="Landing" component={LandingScreen} />
+          <AuthStack.Screen name="EmailAuth" component={EmailAuthScreen} />
+          <AuthStack.Screen name="PhoneVerification" component={PhoneVerificationScreen} />
+          <AuthStack.Screen name="ProfileSetup" component={ProfileSetupScreen} />
+          <AuthStack.Screen name="PhotoUpload" component={PhotoUploadScreen} />
+          <AuthStack.Screen name="BioInput" component={BioInputScreen} />
+          <AuthStack.Screen name="VerificationVideo" component={VerificationVideoScreen} />
           <AuthStack.Screen name="Tutorial" component={TutorialScreen} />
         </AuthStack.Navigator>
       ) : (
+        // Kullanıcı giriş yapmış ve profil tamamlanmış - Ana uygulama
         <MainTabs />
       )}
     </NavigationContainer>
   );
 }
-

@@ -87,7 +87,21 @@ enum MessageType {
 
 model User {
   id                     String        @id @default(uuid())
-  phoneNumber            String        @unique
+  
+  // ============ AUTH ALANLARI ============
+  phoneNumber            String?       @unique  // Telefon ile giriş (opsiyonel)
+  email                  String?       @unique  // E-posta ile giriş (opsiyonel)
+  passwordHash           String?                // E-posta girişi için şifre hash
+  googleId               String?       @unique  // Google OAuth ID
+  appleId                String?       @unique  // Apple OAuth ID
+  emailVerified          Boolean       @default(false)
+  authProvider           String        @default("phone") // phone, email, google, apple
+  
+  // Refresh Token (session yönetimi)
+  refreshToken           String?
+  refreshTokenExp        DateTime?
+  
+  // ============ PROFİL ALANLARI ============
   nickname               String        @unique
   age                    Int
   birthDate              DateTime?     // Doğum tarihi
@@ -100,7 +114,6 @@ model User {
   latitude               Float?        // Konum - enlem
   longitude              Float?        // Konum - boylam
   avatarId               Int           @default(1)  // 1-8 arası varsayılan avatar
-  authProvider           String        @default("phone") // phone, google, apple
   profilePhotos          Photo[]
   verificationVideoUrl   String?
   verified               Boolean       @default(false)
