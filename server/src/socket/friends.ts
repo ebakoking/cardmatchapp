@@ -1,5 +1,6 @@
 import { Server, Socket } from 'socket.io';
 import { prisma } from '../prisma';
+import { FEATURES, logTokenGiftAttempt } from '../config/features';
 
 export function registerFriendsHandlers(io: Server, socket: Socket) {
   // Arkadaş chat odasına katıl
@@ -138,6 +139,18 @@ export function registerFriendsHandlers(io: Server, socket: Socket) {
       amount: number;
     }) => {
       try {
+        // 🔴 KILL SWITCH: Jeton sistemi kapalıysa işlemi reddet
+        logTokenGiftAttempt(!FEATURES.TOKEN_GIFT_ENABLED);
+        if (!FEATURES.TOKEN_GIFT_ENABLED) {
+          console.log('[Friends] ⛔ TOKEN GIFT DISABLED - Request blocked');
+          socket.emit('friend:gift:error', { 
+            code: 'FEATURE_DISABLED', 
+            message: FEATURES.TOKEN_GIFT_DISABLED_MESSAGE,
+            disabled: true,
+          });
+          return;
+        }
+
         const { fromUserId, toUserId, friendshipId, amount } = payload;
         console.log('[Friends] ========== FRIEND GIFT (SPARK!) ==========');
         console.log('[Friends] Gift payload:', JSON.stringify(payload));

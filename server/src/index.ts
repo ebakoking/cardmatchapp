@@ -21,6 +21,7 @@ import rewardsRouter from './routes/rewards';
 import { registerMatchmakingHandlers } from './socket/matchmaking';
 import { registerChatHandlers } from './socket/chat';
 import { registerFriendsHandlers } from './socket/friends';
+import { FEATURES, METRICS } from './config/features';
 
 const app = express();
 const server = http.createServer(app);
@@ -66,6 +67,24 @@ app.use('/api/rewards', rewardsRouter);
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
+});
+
+// Feature flags endpoint - Mobile bu endpoint'ten özelliklerin durumunu öğrenir
+app.get('/api/features', (_req, res) => {
+  res.json({
+    success: true,
+    data: {
+      tokenGiftEnabled: FEATURES.TOKEN_GIFT_ENABLED,
+      tokenGiftDisabledMessage: FEATURES.TOKEN_GIFT_DISABLED_MESSAGE,
+      mediaViewEnabled: FEATURES.MEDIA_VIEW_ENABLED,
+      primePurchaseEnabled: FEATURES.PRIME_PURCHASE_ENABLED,
+      mockPurchaseEnabled: FEATURES.MOCK_PURCHASE_ENABLED,
+    },
+    metrics: {
+      tokenGiftAttempts: METRICS.tokenGiftAttempts,
+      tokenGiftBlocked: METRICS.tokenGiftBlocked,
+    },
+  });
 });
 
 // Socket.IO

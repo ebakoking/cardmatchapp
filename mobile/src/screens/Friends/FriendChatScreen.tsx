@@ -57,6 +57,8 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const [messages, setMessages] = useState<FriendMessage[]>([]);
   const [input, setInput] = useState('');
   const [giftModalVisible, setGiftModalVisible] = useState(false);
+  const [tokenGiftEnabled, setTokenGiftEnabled] = useState(true); // Feature flag
+  const [tokenGiftDisabledMessage, setTokenGiftDisabledMessage] = useState('');
   const [mediaModalVisible, setMediaModalVisible] = useState(false);
   const [photoEditorVisible, setPhotoEditorVisible] = useState(false);
   const [pendingPhotoUri, setPendingPhotoUri] = useState<string | null>(null);
@@ -137,6 +139,22 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
     }
   }, [isRecording, pulseAnim]);
 
+  // Feature flags'ı yükle
+  useEffect(() => {
+    const fetchFeatures = async () => {
+      try {
+        const res = await api.get('/api/features');
+        if (res.data?.data) {
+          setTokenGiftEnabled(res.data.data.tokenGiftEnabled);
+          setTokenGiftDisabledMessage(res.data.data.tokenGiftDisabledMessage || 'Geçici olarak devre dışı');
+        }
+      } catch (error) {
+        console.log('[FriendChatScreen] Failed to fetch features:', error);
+      }
+    };
+    fetchFeatures();
+  }, []);
+
   // Socket bağlantısı ve mesaj dinleyicileri
   useEffect(() => {
     const socket = getSocket();
@@ -193,10 +211,23 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
       refreshProfile();
     });
 
+    // Hediye hatası - KILL SWITCH dahil
+    socket.on('friend:gift:error', (payload: { code: string; message: string; disabled?: boolean }) => {
+      console.log('[FriendChat] Gift error:', payload);
+      if (payload.code === 'FEATURE_DISABLED' || payload.disabled) {
+        setTokenGiftEnabled(false);
+        setTokenGiftDisabledMessage(payload.message);
+        Alert.alert('Bakım', payload.message);
+      } else {
+        Alert.alert('Hata', payload.message);
+      }
+    });
+
     return () => {
       socket.off('friend:message');
       socket.off('friend:gift:received');
       socket.off('friend:gift:sent');
+      socket.off('friend:gift:error');
     };
   }, [friendshipId, friendId, showGiftAnimation]);
 
@@ -500,6 +531,13 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
   // ============ HEDİYE ELMAS ============
   const handleSendGift = (amount: number, skipBalanceCheck = false) => {
     if (!user) return;
+    
+    // 🔴 KILL SWITCH: Feature devre dışıysa uyar
+    if (!tokenGiftEnabled) {
+      Alert.alert('Bakım', tokenGiftDisabledMessage || 'Jeton sistemi geçici olarak kapalı.');
+      setGiftModalVisible(false);
+      return;
+    }
     
     if (!skipBalanceCheck && (user.tokenBalance || 0) < amount) {
       // Yetersiz bakiye - satın alma ekranını göster

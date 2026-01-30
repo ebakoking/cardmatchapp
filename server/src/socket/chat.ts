@@ -1,5 +1,6 @@
 import { Server, Socket } from 'socket.io';
 import { prisma } from '../prisma';
+import { FEATURES, logTokenGiftAttempt } from '../config/features';
 
 interface StageConfig {
   name: string;
@@ -476,6 +477,18 @@ export function registerChatHandlers(io: Server, socket: Socket) {
       amount: number;
     }) => {
       try {
+        // 🔴 KILL SWITCH: Jeton sistemi kapalıysa işlemi reddet
+        logTokenGiftAttempt(!FEATURES.TOKEN_GIFT_ENABLED);
+        if (!FEATURES.TOKEN_GIFT_ENABLED) {
+          console.log('[Gift] ⛔ TOKEN GIFT DISABLED - Request blocked');
+          socket.emit('gift:error', { 
+            code: 'FEATURE_DISABLED', 
+            message: FEATURES.TOKEN_GIFT_DISABLED_MESSAGE,
+            disabled: true,
+          });
+          return;
+        }
+
         const { fromUserId, toUserId, sessionId, amount } = payload;
         console.log('[Gift] ========== TOKEN GIFT START ==========');
         console.log('[Gift] Payload:', JSON.stringify(payload));

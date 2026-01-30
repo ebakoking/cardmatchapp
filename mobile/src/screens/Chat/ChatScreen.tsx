@@ -92,6 +92,8 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const [isEnded, setIsEnded] = useState(false);
   const [giftModalVisible, setGiftModalVisible] = useState(false);
   const [friendRequestSent, setFriendRequestSent] = useState(false);
+  const [tokenGiftEnabled, setTokenGiftEnabled] = useState(true); // Feature flag
+  const [tokenGiftDisabledMessage, setTokenGiftDisabledMessage] = useState('');
   
   // Block/Report menü state
   const [menuModalVisible, setMenuModalVisible] = useState(false);
@@ -134,6 +136,22 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   
   // Ses kaydı önizleme modal state
   const [audioPreviewVisible, setAudioPreviewVisible] = useState(false);
+
+  // Feature flags'ı yükle
+  useEffect(() => {
+    const fetchFeatures = async () => {
+      try {
+        const res = await api.get('/api/features');
+        if (res.data?.data) {
+          setTokenGiftEnabled(res.data.data.tokenGiftEnabled);
+          setTokenGiftDisabledMessage(res.data.data.tokenGiftDisabledMessage || 'Geçici olarak devre dışı');
+        }
+      } catch (error) {
+        console.log('[ChatScreen] Failed to fetch features:', error);
+      }
+    };
+    fetchFeatures();
+  }, []);
 
   // Özellik kilitli mi kontrolü
   const isFeatureLocked = (feature: keyof typeof FEATURE_UNLOCKS) => {
@@ -257,8 +275,17 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     // Hediye hatası
     socket.on(
       'gift:error',
-      (payload: { code: string; message: string; balance?: number; required?: number }) => {
+      (payload: { code: string; message: string; balance?: number; required?: number; disabled?: boolean }) => {
         console.log('[ChatScreen] gift:error:', payload);
+        
+        // 🔴 KILL SWITCH: Feature devre dışı
+        if (payload.code === 'FEATURE_DISABLED' || payload.disabled) {
+          setTokenGiftEnabled(false);
+          setTokenGiftDisabledMessage(payload.message);
+          Alert.alert('Bakım', payload.message);
+          return;
+        }
+        
         if (payload.code === 'INSUFFICIENT_BALANCE') {
           Alert.alert(
             'Yetersiz Bakiye',
@@ -589,6 +616,13 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
   // Jeton gönder
   const handleSendGift = (amount: number) => {
+    // 🔴 KILL SWITCH: Feature devre dışıysa uyar
+    if (!tokenGiftEnabled) {
+      Alert.alert('Bakım', tokenGiftDisabledMessage || 'Jeton sistemi geçici olarak kapalı.');
+      setGiftModalVisible(false);
+      return;
+    }
+
     if (isFeatureLocked('gift')) {
       Alert.alert('Kilitli', `Jeton göndermek için Seviye ${FEATURE_UNLOCKS.gift}'e ulaşmalısınız.`);
       return;
