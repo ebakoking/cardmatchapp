@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Image,
@@ -8,12 +8,28 @@ import {
   ActivityIndicator,
   Modal,
   Alert,
+  Platform,
 } from 'react-native';
-import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../theme/colors';
 import { FONTS } from '../theme/fonts';
 import { SPACING } from '../theme/spacing';
+
+// expo-blur için güvenli import - yoksa fallback kullanılır
+let BlurView: any = null;
+try {
+  BlurView = require('expo-blur').BlurView;
+} catch (e) {
+  // expo-blur yüklenemedi, fallback kullanılacak
+  console.log('expo-blur not available, using fallback overlay');
+}
+
+// Fallback blur overlay (expo-blur yoksa veya çalışmazsa)
+const FallbackBlurOverlay: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <View style={styles.fallbackBlur}>
+    {children}
+  </View>
+);
 
 interface BlurredPhotoProps {
   photoId: string;
@@ -86,20 +102,35 @@ const BlurredPhoto: React.FC<BlurredPhotoProps> = ({
       >
         <Image source={{ uri: photoUrl }} style={styles.photo} />
         
-        {/* Blur overlay */}
+        {/* Blur overlay - BlurView varsa kullan, yoksa fallback */}
         {!localUnlocked && (
-          <BlurView intensity={80} style={styles.blurOverlay} tint="dark">
-            <View style={styles.lockContent}>
-              <View style={styles.lockIconContainer}>
-                <Ionicons name="lock-closed" size={28} color={COLORS.text} />
+          BlurView ? (
+            <BlurView intensity={80} style={styles.blurOverlay} tint="dark">
+              <View style={styles.lockContent}>
+                <View style={styles.lockIconContainer}>
+                  <Ionicons name="lock-closed" size={28} color={COLORS.text} />
+                </View>
+                <View style={styles.costBadge}>
+                  <Ionicons name="diamond" size={14} color={COLORS.accent} />
+                  <Text style={styles.costText}>{unlockCost}</Text>
+                </View>
+                <Text style={styles.tapToUnlock}>Açmak için dokun</Text>
               </View>
-              <View style={styles.costBadge}>
-                <Ionicons name="diamond" size={14} color={COLORS.accent} />
-                <Text style={styles.costText}>{unlockCost}</Text>
+            </BlurView>
+          ) : (
+            <FallbackBlurOverlay>
+              <View style={styles.lockContent}>
+                <View style={styles.lockIconContainer}>
+                  <Ionicons name="lock-closed" size={28} color={COLORS.text} />
+                </View>
+                <View style={styles.costBadge}>
+                  <Ionicons name="diamond" size={14} color={COLORS.accent} />
+                  <Text style={styles.costText}>{unlockCost}</Text>
+                </View>
+                <Text style={styles.tapToUnlock}>Açmak için dokun</Text>
               </View>
-              <Text style={styles.tapToUnlock}>Açmak için dokun</Text>
-            </View>
-          </BlurView>
+            </FallbackBlurOverlay>
+          )
         )}
 
         {/* Caption (sadece açık fotoğraflarda) */}
@@ -205,6 +236,12 @@ const styles = StyleSheet.create({
   },
   blurOverlay: {
     ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fallbackBlur: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(20, 20, 35, 0.92)',
     justifyContent: 'center',
     alignItems: 'center',
   },
