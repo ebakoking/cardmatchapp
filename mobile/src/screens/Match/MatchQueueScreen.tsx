@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { View, Text, ActivityIndicator, TouchableOpacity, StyleSheet, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -14,6 +14,9 @@ type Props = NativeStackScreenProps<ChatStackParamList, 'MatchQueue'>;
 const MatchQueueScreen: React.FC<Props> = ({ navigation }) => {
   const { user } = useAuth();
   const [searching, setSearching] = useState(true);
+  
+  // Track if match was found - don't emit match:leave on successful match
+  const matchFoundRef = useRef(false);
 
   useEffect(() => {
     const socket = getSocket();
@@ -24,6 +27,7 @@ const MatchQueueScreen: React.FC<Props> = ({ navigation }) => {
 
     socket.on('match:found', (payload: { matchId: string; partnerNickname: string }) => {
       console.log('[MatchQueue] Match found:', payload);
+      matchFoundRef.current = true; // Mark that match was found
       setSearching(false);
       navigation.replace('CardGate', { matchId: payload.matchId });
     });
@@ -54,9 +58,14 @@ const MatchQueueScreen: React.FC<Props> = ({ navigation }) => {
     });
 
     return () => {
-      // Cleanup: kuyruktan çık
-      console.log('[MatchQueue] Leaving queue for userId:', user.id);
-      socket.emit('match:leave', { userId: user.id });
+      // Cleanup: kuyruktan çık - AMA match bulunduysa çıkma!
+      // match:leave oyunu siler, bu yüzden match bulunduysa emit etmemeliyiz
+      if (!matchFoundRef.current) {
+        console.log('[MatchQueue] Leaving queue for userId:', user.id);
+        socket.emit('match:leave', { userId: user.id });
+      } else {
+        console.log('[MatchQueue] Match found, NOT emitting match:leave');
+      }
       socket.off('match:found');
       socket.off('match:blocked');
       socket.off('match:ended');

@@ -80,8 +80,31 @@ const CardGateScreen: React.FC<Props> = ({ route, navigation }) => {
     const handleCardsError = (payload: CardsErrorPayload) => {
       console.log('[CardGate] cards:error received:', payload);
       if (payload.matchId === matchId) {
-        setLoadingError(true);
         setIsRequesting(false);
+        
+        // Handle different error reasons
+        if (payload.reason === 'no_active_match') {
+          // Oyun bulunamadı - MatchQueue'ya dön
+          Alert.alert(
+            'Eşleşme Yenilendi',
+            'Oyun bulunamadı. Yeniden eşleşme arayabilirsiniz.',
+            [
+              { text: 'Yeni Eşleşme Ara', onPress: () => {
+                navigation.popToTop();
+                setTimeout(() => navigation.navigate('MatchQueue'), 300);
+              }},
+              { text: 'Ana Sayfa', style: 'cancel', onPress: () => navigation.popToTop() },
+            ]
+          );
+        } else if (payload.reason === 'unauthenticated') {
+          // Oturum hatası - login'e yönlendir
+          Alert.alert('Oturum Hatası', 'Lütfen yeniden giriş yapın.', [
+            { text: 'Tamam', onPress: () => navigation.popToTop() },
+          ]);
+        } else {
+          // Diğer hatalar
+          setLoadingError(true);
+        }
       }
     };
 

@@ -227,6 +227,11 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
         // Kullanıcıyı kendi userId'si ile bir odaya alıyoruz
         // Böylece socketId değişse bile io.to(userId) ile emit edebileceğiz.
         socket.join(userId);
+        
+        // Store userId on socket.data for authoritative identification
+        socket.data = socket.data || {};
+        socket.data.userId = userId;
+        console.log('[Matchmaking] socket.data.userId set:', userId);
 
         // Kullanıcı zaten kuyrukta mı kontrol et - duplicate önleme
         const existingIdx = matchmakingQueue.findIndex((q) => q.userId === userId);
@@ -379,18 +384,36 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
   // Server responds with cards:deliver or cards:error
   socket.on(
     'cards:request',
-    (payload: { matchId: string; userId: string }) => {
-      const { matchId, userId } = payload;
+    (payload: { matchId: string; userId?: string }) => {
+      const { matchId } = payload;
+      
+      // Authoritative userId - socket.data'dan al, yoksa client payload'ından
+      const userId = socket.data?.userId || payload.userId;
+      
       console.log('[Cards] ========== CARDS REQUEST ==========');
       console.log('[Cards] matchId:', matchId);
-      console.log('[Cards] userId:', userId);
+      console.log('[Cards] socket.data.userId:', socket.data?.userId);
+      console.log('[Cards] payload.userId:', payload.userId);
+      console.log('[Cards] resolved userId:', userId);
       console.log('[Cards] socketId:', socket.id);
-      console.log('[Cards] Active games:', Array.from(cardGames.keys()));
+      console.log('[Cards] Active games count:', cardGames.size);
+      console.log('[Cards] Active game IDs:', Array.from(cardGames.keys()));
+      
+      // userId yoksa hata
+      if (!userId) {
+        console.log('[Cards] ERROR: No userId available');
+        socket.emit('cards:error', { 
+          matchId, 
+          reason: 'unauthenticated',
+          message: 'Oturum hatası. Lütfen yeniden giriş yapın.' 
+        });
+        return;
+      }
       
       // Game'i bul
       const game = cardGames.get(matchId);
       if (!game) {
-        console.log('[Cards] ERROR: Game not found');
+        console.log('[Cards] ERROR: Game not found for matchId:', matchId);
         socket.emit('cards:error', { 
           matchId, 
           reason: 'no_active_match',
@@ -399,9 +422,16 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
         return;
       }
       
+      console.log('[Cards] Game found:', {
+        gameMatchId: game.matchId,
+        user1Id: game.user1Id,
+        user2Id: game.user2Id,
+        cardsCount: game.cards.length,
+      });
+      
       // User authorized mı?
       if (userId !== game.user1Id && userId !== game.user2Id) {
-        console.log('[Cards] ERROR: User not authorized');
+        console.log('[Cards] ERROR: User not authorized. userId:', userId, 'game users:', game.user1Id, game.user2Id);
         socket.emit('cards:error', { 
           matchId, 
           reason: 'unauthorized',
@@ -411,12 +441,12 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
       }
 
       // Kartları gönder
-      console.log('[Cards] SUCCESS: Delivering', game.cards.length, 'cards');
+      console.log('[Cards] SUCCESS: Delivering', game.cards.length, 'cards to user:', userId);
       socket.emit('cards:deliver', { 
         matchId, 
         cards: game.cards 
       });
-      console.log('[Cards] cards:deliver sent');
+      console.log('[Cards] cards:deliver sent successfully');
     },
   );
 
