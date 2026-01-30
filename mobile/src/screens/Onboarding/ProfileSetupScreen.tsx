@@ -312,12 +312,9 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
           onResponderRelease={dismissKeyboard}
         >
           <Text style={styles.stepEmoji}>👤</Text>
-          <Text style={styles.stepTitle}>Seni nasıl tanısınlar?</Text>
+          <Text style={styles.stepTitle}>Sohbette hangi isimle görünmek istersin?</Text>
           <Text style={styles.stepSubtitle}>
             Gerçek adın olmak zorunda değil.
-          </Text>
-          <Text style={styles.stepSubtitleSecondary}>
-            İstediğin zaman değiştirebilirsin.
           </Text>
 
           <View style={styles.inputContainer}>
@@ -353,9 +350,9 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
             )}
           </View>
 
-          {/* Input kuralları */}
+          {/* Input kuralları - sadece gerekli olanlar */}
           <Text style={styles.inputRules}>
-            3–15 karakter · Boşluk yok · Harf, rakam ve _ kullanabilirsin
+            3–15 karakter · Boşluk yok
           </Text>
 
           {/* Durum mesajları */}
@@ -587,7 +584,7 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
             </TouchableOpacity>
           )}
           <Text style={styles.stepIndicator}>
-            {currentStep} / {TOTAL_STEPS} · {currentStep === 1 ? '30 sn' : currentStep === 2 ? '20 sn' : '10 sn'}
+            {currentStep} / {TOTAL_STEPS}
           </Text>
           <View style={{ width: 70 }} />
         </View>
@@ -619,11 +616,23 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
               </Text>
             )}
           </TouchableOpacity>
+          
           {/* Step 1 için micro-copy */}
           {currentStep === 1 && (
-            <Text style={styles.ctaMicroCopy}>
-              Bu isim sohbetlerde görünecek
-            </Text>
+            <>
+              {/* Disabled durumunda yardımcı metin */}
+              {nickname.length === 0 && (
+                <Text style={styles.ctaHelperText}>
+                  Bir kullanıcı adı yazmalısın
+                </Text>
+              )}
+              {/* Aktif durumunda önemli bilgi */}
+              {nickname.length > 0 && (
+                <Text style={styles.ctaMicroCopy}>
+                  Bu isim sohbetlerde görünecek
+                </Text>
+              )}
+            </>
           )}
         </View>
 
@@ -716,14 +725,7 @@ const styles = StyleSheet.create({
     ...FONTS.body,
     color: COLORS.textMuted,
     textAlign: 'center',
-    marginBottom: SPACING.xs,
-  },
-  stepSubtitleSecondary: {
-    ...FONTS.caption,
-    color: COLORS.textMuted,
-    textAlign: 'center',
     marginBottom: SPACING.xl,
-    opacity: 0.8,
   },
   // Input styles
   inputContainer: {
@@ -905,10 +907,17 @@ const styles = StyleSheet.create({
   },
   ctaMicroCopy: {
     ...FONTS.caption,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+    marginTop: SPACING.sm,
+    fontWeight: '500',
+  },
+  ctaHelperText: {
+    ...FONTS.caption,
     color: COLORS.textMuted,
     textAlign: 'center',
     marginTop: SPACING.sm,
-    opacity: 0.8,
+    opacity: 0.7,
   },
   // Modal styles
   modalOverlay: {
