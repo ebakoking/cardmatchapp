@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,9 @@ import {
   Modal,
   Keyboard,
   ScrollView,
+  Animated,
+  NativeSyntheticEvent,
+  TextInputKeyPressEventData,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -55,6 +58,17 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
   // Loading states
   const [loading, setLoading] = useState(false);
   const [nicknameStatus, setNicknameStatus] = useState<'idle' | 'checking' | 'taken' | 'available'>('idle');
+
+  // Birth date input refs (auto-focus için)
+  const dayInputRef = useRef<TextInput>(null);
+  const monthInputRef = useRef<TextInput>(null);
+  const yearInputRef = useRef<TextInput>(null);
+  
+  // Focus tracking (görsel vurgulama için)
+  const [focusedInput, setFocusedInput] = useState<'day' | 'month' | 'year' | null>(null);
+  
+  // Zodiac kartı animasyonu
+  const zodiacAnimValue = useRef(new Animated.Value(0)).current;
 
   // Konum izni al (arka planda, sayfa açılınca)
   const requestLocation = useCallback(async () => {
@@ -119,12 +133,23 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
 
       // Burç hesapla
       const sign = getZodiacSign(day, month);
+      if (sign && !zodiacSign) {
+        // Yeni burç gösterilirken animasyon başlat
+        zodiacAnimValue.setValue(0);
+        Animated.spring(zodiacAnimValue, {
+          toValue: 1,
+          tension: 50,
+          friction: 7,
+          useNativeDriver: true,
+        }).start();
+      }
       setZodiacSign(sign);
     } else {
       setCalculatedAge(null);
       setZodiacSign(null);
+      zodiacAnimValue.setValue(0);
     }
-  }, [birthYear, birthMonth, birthDay]);
+  }, [birthYear, birthMonth, birthDay, zodiacSign, zodiacAnimValue]);
 
   // Nickname kontrolü (debounce)
   useEffect(() => {
@@ -377,101 +402,184 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   // Adım 2: Doğum Tarihi + Burç
-  const renderStep2 = () => (
-    <ScrollView 
-      style={styles.stepScrollView} 
-      contentContainerStyle={styles.stepScrollContent}
-      keyboardShouldPersistTaps="handled"
-      showsVerticalScrollIndicator={false}
-    >
-      <View 
-        style={styles.dismissArea}
-        onStartShouldSetResponder={() => true}
-        onResponderRelease={dismissKeyboard}
+  const renderStep2 = () => {
+    // Gün input handler - 2 karakter girilince Ay'a geç
+    const handleDayChange = (v: string) => {
+      const cleaned = v.replace(/[^0-9]/g, '').slice(0, 2);
+      setBirthDay(cleaned);
+      if (cleaned.length === 2) {
+        monthInputRef.current?.focus();
+      }
+    };
+
+    // Ay input handler - 2 karakter girilince Yıl'a geç
+    const handleMonthChange = (v: string) => {
+      const cleaned = v.replace(/[^0-9]/g, '').slice(0, 2);
+      setBirthMonth(cleaned);
+      if (cleaned.length === 2) {
+        yearInputRef.current?.focus();
+      }
+    };
+
+    // Yıl input handler - 4 karakter girilince klavyeyi kapat
+    const handleYearChange = (v: string) => {
+      const cleaned = v.replace(/[^0-9]/g, '').slice(0, 4);
+      setBirthYear(cleaned);
+      if (cleaned.length === 4) {
+        setTimeout(dismissKeyboard, 100);
+      }
+    };
+
+    // Backspace handler - boş ise önceki input'a geç
+    const handleKeyPress = (
+      e: NativeSyntheticEvent<TextInputKeyPressEventData>,
+      currentValue: string,
+      prevRef: React.RefObject<TextInput> | null
+    ) => {
+      if (e.nativeEvent.key === 'Backspace' && currentValue === '' && prevRef) {
+        prevRef.current?.focus();
+      }
+    };
+
+    return (
+      <ScrollView 
+        style={styles.stepScrollView} 
+        contentContainerStyle={styles.stepScrollContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.stepEmoji}>🎂</Text>
-        <Text style={styles.stepTitle}>Doğum Tarihin</Text>
-        <Text style={styles.stepSubtitle}>
-          Yıldızların ne söylediğini merak etmiyor musun?
-        </Text>
+        <View 
+          style={styles.dismissArea}
+          onStartShouldSetResponder={() => true}
+          onResponderRelease={dismissKeyboard}
+        >
+          <Text style={styles.stepEmoji}>🎂</Text>
+          <Text style={styles.stepTitle}>Doğum Tarihin</Text>
+          <Text style={styles.stepSubtitle}>
+            Eşleşme için yaşını hesaplamamız gerekiyor.
+          </Text>
 
-        <View style={styles.birthDateRow}>
-          <View style={styles.birthInputContainer}>
-            <Text style={styles.birthLabel}>Gün</Text>
-            <TextInput
-              style={styles.birthInput}
-              value={birthDay}
-              onChangeText={(v) => setBirthDay(v.replace(/[^0-9]/g, '').slice(0, 2))}
-              placeholder="01"
-              placeholderTextColor={COLORS.textMuted}
-              keyboardType="number-pad"
-              maxLength={2}
-              returnKeyType="next"
-              onSubmitEditing={dismissKeyboard}
-            />
+          <View style={styles.birthDateRow}>
+            {/* Gün Input */}
+            <View style={styles.birthInputContainer}>
+              <Text style={[
+                styles.birthLabel,
+                focusedInput === 'day' && styles.birthLabelActive,
+              ]}>Gün</Text>
+              <TextInput
+                ref={dayInputRef}
+                style={[
+                  styles.birthInput,
+                  focusedInput === 'day' && styles.birthInputActive,
+                ]}
+                value={birthDay}
+                onChangeText={handleDayChange}
+                onFocus={() => setFocusedInput('day')}
+                onBlur={() => setFocusedInput(null)}
+                placeholder="08"
+                placeholderTextColor={COLORS.textMuted}
+                keyboardType="number-pad"
+                maxLength={2}
+                returnKeyType="next"
+                textAlign="center"
+              />
+            </View>
+
+            {/* Ay Input */}
+            <View style={styles.birthInputContainer}>
+              <Text style={[
+                styles.birthLabel,
+                focusedInput === 'month' && styles.birthLabelActive,
+              ]}>Ay</Text>
+              <TextInput
+                ref={monthInputRef}
+                style={[
+                  styles.birthInput,
+                  focusedInput === 'month' && styles.birthInputActive,
+                ]}
+                value={birthMonth}
+                onChangeText={handleMonthChange}
+                onFocus={() => setFocusedInput('month')}
+                onBlur={() => setFocusedInput(null)}
+                onKeyPress={(e) => handleKeyPress(e, birthMonth, dayInputRef)}
+                placeholder="05"
+                placeholderTextColor={COLORS.textMuted}
+                keyboardType="number-pad"
+                maxLength={2}
+                returnKeyType="next"
+                textAlign="center"
+              />
+            </View>
+
+            {/* Yıl Input */}
+            <View style={styles.birthInputContainer}>
+              <Text style={[
+                styles.birthLabel,
+                focusedInput === 'year' && styles.birthLabelActive,
+              ]}>Yıl</Text>
+              <TextInput
+                ref={yearInputRef}
+                style={[
+                  styles.birthInput,
+                  styles.birthInputYear,
+                  focusedInput === 'year' && styles.birthInputActive,
+                ]}
+                value={birthYear}
+                onChangeText={handleYearChange}
+                onFocus={() => setFocusedInput('year')}
+                onBlur={() => setFocusedInput(null)}
+                onKeyPress={(e) => handleKeyPress(e, birthYear, monthInputRef)}
+                placeholder="1995"
+                placeholderTextColor={COLORS.textMuted}
+                keyboardType="number-pad"
+                maxLength={4}
+                returnKeyType="done"
+                textAlign="center"
+              />
+            </View>
           </View>
 
-          <View style={styles.birthInputContainer}>
-            <Text style={styles.birthLabel}>Ay</Text>
-            <TextInput
-              style={styles.birthInput}
-              value={birthMonth}
-              onChangeText={(v) => setBirthMonth(v.replace(/[^0-9]/g, '').slice(0, 2))}
-              placeholder="01"
-              placeholderTextColor={COLORS.textMuted}
-              keyboardType="number-pad"
-              maxLength={2}
-              returnKeyType="next"
-              onSubmitEditing={dismissKeyboard}
-            />
-          </View>
+          {/* Güven microcopy */}
+          <Text style={styles.birthTrustText}>
+            Yaş uyumu için kullanılır
+          </Text>
 
-          <View style={styles.birthInputContainer}>
-            <Text style={styles.birthLabel}>Yıl</Text>
-            <TextInput
-              style={[styles.birthInput, { width: 100 }]}
-              value={birthYear}
-              onChangeText={(v) => {
-                setBirthYear(v.replace(/[^0-9]/g, '').slice(0, 4));
-                // Yıl tamamlandığında klavyeyi kapat
-                if (v.length === 4) {
-                  setTimeout(dismissKeyboard, 100);
-                }
-              }}
-              placeholder="1990"
-              placeholderTextColor={COLORS.textMuted}
-              keyboardType="number-pad"
-              maxLength={4}
-              returnKeyType="done"
-              onSubmitEditing={dismissKeyboard}
-            />
-          </View>
+          {/* Burç Gösterimi - Animasyonlu */}
+          {zodiacSign && (
+            <Animated.View style={[
+              styles.zodiacContainer,
+              {
+                opacity: zodiacAnimValue,
+                transform: [{
+                  scale: zodiacAnimValue.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0.9, 1],
+                  }),
+                }],
+              },
+            ]}>
+              <Text style={styles.zodiacEmoji}>{zodiacSign.emoji}</Text>
+              <Text style={styles.zodiacTitle}>
+                Demek bir {zodiacSign.nameTR} burcusun!
+              </Text>
+              <Text style={styles.zodiacMessage}>
+                {getZodiacMessage(zodiacSign)} ✨
+              </Text>
+            </Animated.View>
+          )}
+
+          {/* Yaş uyarısı */}
+          {calculatedAge !== null && calculatedAge < 18 && (
+            <View style={styles.ageWarning}>
+              <Text style={styles.ageWarningText}>
+                ⚠️ CardMatch için 18 yaşından büyük olmalısın
+              </Text>
+            </View>
+          )}
         </View>
-
-        {/* Burç Gösterimi */}
-        {zodiacSign && (
-          <View style={styles.zodiacContainer}>
-            <Text style={styles.zodiacEmoji}>{zodiacSign.emoji}</Text>
-            <Text style={styles.zodiacTitle}>
-              Demek bir {zodiacSign.nameTR} burcusun!
-            </Text>
-            <Text style={styles.zodiacMessage}>
-              {getZodiacMessage(zodiacSign)} ✨
-            </Text>
-          </View>
-        )}
-
-        {/* Yaş uyarısı */}
-        {calculatedAge !== null && calculatedAge < 18 && (
-          <View style={styles.ageWarning}>
-            <Text style={styles.ageWarningText}>
-              ⚠️ CardMatch için 18 yaşından büyük olmalısın
-            </Text>
-          </View>
-        )}
-      </View>
-    </ScrollView>
-  );
+      </ScrollView>
+    );
+  };
 
   // Adım 3: Cinsiyet
   const renderStep3 = () => (
@@ -810,6 +918,10 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     marginBottom: SPACING.xs,
   },
+  birthLabelActive: {
+    color: COLORS.primary,
+    fontWeight: '600',
+  },
   birthInput: {
     backgroundColor: COLORS.surface,
     borderRadius: 16,
@@ -819,6 +931,22 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     fontSize: 20,
     fontWeight: '600',
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  birthInputActive: {
+    borderColor: COLORS.primary,
+    backgroundColor: 'rgba(255, 215, 0, 0.05)',
+  },
+  birthInputYear: {
+    width: 100,
+  },
+  birthTrustText: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+    marginTop: SPACING.md,
+    opacity: 0.7,
   },
   // Zodiac styles
   zodiacContainer: {
