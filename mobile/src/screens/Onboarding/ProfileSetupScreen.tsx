@@ -583,17 +583,20 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
   const renderStep3 = () => (
     <View style={styles.stepContent}>
       <Text style={styles.stepEmoji}>✨</Text>
-      <Text style={styles.stepTitle}>Cinsiyetini Seç</Text>
+      <Text style={styles.stepTitle}>Profil Bilgini Tamamla</Text>
+      <Text style={styles.stepSubtitle}>
+        Eşleşmeleri daha uyumlu yapmak için kullanılır.
+      </Text>
 
-      <View style={[styles.genderOptions, { marginTop: SPACING.xl }]}>
+      <View style={[styles.genderOptions, { marginTop: SPACING.lg }]}>
         <TouchableOpacity
           style={[
             styles.genderCard,
             gender === 'MALE' && styles.genderCardActive,
           ]}
           onPress={() => setGender('MALE')}
+          activeOpacity={0.7}
         >
-          <Text style={styles.genderEmoji}>👨</Text>
           <Text style={[
             styles.genderText,
             gender === 'MALE' && styles.genderTextActive,
@@ -608,8 +611,8 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
             gender === 'FEMALE' && styles.genderCardActive,
           ]}
           onPress={() => setGender('FEMALE')}
+          activeOpacity={0.7}
         >
-          <Text style={styles.genderEmoji}>👩</Text>
           <Text style={[
             styles.genderText,
             gender === 'FEMALE' && styles.genderTextActive,
@@ -624,8 +627,8 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
             gender === 'OTHER' && styles.genderCardActive,
           ]}
           onPress={() => setGender('OTHER')}
+          activeOpacity={0.7}
         >
-          <Text style={styles.genderEmoji}>🌈</Text>
           <Text style={[
             styles.genderText,
             gender === 'OTHER' && styles.genderTextActive,
@@ -754,6 +757,18 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
               {calculatedAge !== null && calculatedAge < 18 && (
                 <Text style={styles.ctaHelperText}>
                   18 yaşından büyük olmalısın
+                </Text>
+              )}
+            </>
+          )}
+          
+          {/* Step 3 için micro-copy */}
+          {currentStep === 3 && (
+            <>
+              {/* Seçim yapılmadı */}
+              {gender === null && (
+                <Text style={styles.ctaHelperText}>
+                  Bir seçenek seçmelisin
                 </Text>
               )}
             </>
@@ -1005,10 +1020,11 @@ const styles = StyleSheet.create({
     gap: SPACING.md,
   },
   genderCard: {
-    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: COLORS.surface,
-    padding: SPACING.lg,
+    paddingVertical: SPACING.lg,
+    paddingHorizontal: SPACING.xl,
     borderRadius: 16,
     borderWidth: 2,
     borderColor: 'transparent',
@@ -1017,14 +1033,11 @@ const styles = StyleSheet.create({
     borderColor: COLORS.primary,
     backgroundColor: 'rgba(255, 215, 0, 0.1)',
   },
-  genderEmoji: {
-    fontSize: 30,
-    marginRight: SPACING.md,
-  },
   genderText: {
     ...FONTS.body,
     color: COLORS.textMuted,
-    fontSize: 18,
+    fontSize: 17,
+    fontWeight: '500',
   },
   genderTextActive: {
     color: COLORS.text,
