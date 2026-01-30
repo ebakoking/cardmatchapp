@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
 import { ProfileStackParamList } from '../../navigation';
 import { COLORS } from '../../theme/colors';
 import { FONTS } from '../../theme/fonts';
@@ -40,6 +41,14 @@ const ProfileScreen: React.FC<Props> = ({ navigation }) => {
   
   // Kullanıcının avatar'ını bul
   const currentAvatar = AVATARS.find(a => a.id === (user?.avatarId || 1)) || AVATARS[0];
+
+  // Ekran focus olduğunda profili yenile (spark güncellemesi için)
+  useFocusEffect(
+    useCallback(() => {
+      console.log('[ProfileScreen] Screen focused, refreshing profile...');
+      refreshProfile();
+    }, [refreshProfile])
+  );
 
   const saveBio = async () => {
     try {

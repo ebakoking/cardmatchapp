@@ -379,25 +379,77 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
     'cards:request',
     (payload: { matchId: string; userId: string }) => {
       const { matchId, userId } = payload;
+      console.log('[Matchmaking] cards:request received:', { matchId, userId, socketId: socket.id });
+      console.log('[Matchmaking] Active card games:', Array.from(cardGames.keys()));
+      
       const game = cardGames.get(matchId);
-      if (!game) return;
-      if (userId !== game.user1Id && userId !== game.user2Id) return;
+      if (!game) {
+        console.log('[Matchmaking] Game not found for matchId:', matchId);
+        return;
+      }
+      if (userId !== game.user1Id && userId !== game.user2Id) {
+        console.log('[Matchmaking] User not in game:', { userId, game_user1: game.user1Id, game_user2: game.user2Id });
+        return;
+      }
 
+      console.log('[Matchmaking] Sending cards:init to socket:', socket.id, 'cards count:', game.cards.length);
       socket.emit('cards:init', { cards: game.cards });
     },
   );
 
   // Kuyruktan çık (kullanıcı iptal etti)
-  socket.on('match:leave', (payload: { userId: string }) => {
-    const { userId } = payload;
-    console.log('[Matchmaking] match:leave received:', { userId, socketId: socket.id });
+  socket.on('match:leave', (payload: { userId: string; matchId?: string }) => {
+    const { userId, matchId } = payload;
+    console.log('[Matchmaking] match:leave received:', { userId, matchId, socketId: socket.id });
     
+    // 1. Kuyruktan çıkar
     const idx = matchmakingQueue.findIndex((q) => q.userId === userId);
     if (idx >= 0) {
       matchmakingQueue.splice(idx, 1);
       console.log('[Matchmaking] User removed from queue:', { userId, newQueueSize: matchmakingQueue.length });
-    } else {
-      console.log('[Matchmaking] User was not in queue:', { userId });
+    }
+    
+    // 2. Aktif kart oyununda mı kontrol et
+    for (const [gameMatchId, game] of cardGames.entries()) {
+      if (matchId && gameMatchId !== matchId) continue;
+      
+      let isInGame = false;
+      let peerId: string | null = null;
+      
+      if (game.user1Id === userId) {
+        isInGame = true;
+        peerId = game.user2Id;
+      } else if (game.user2Id === userId) {
+        isInGame = true;
+        peerId = game.user1Id;
+      }
+      
+      if (isInGame && peerId) {
+        console.log('[Matchmaking] User left during card game:', { gameMatchId, userId, peerId });
+        
+        // Peer'a bildir
+        io.to(peerId).emit('match:ended', {
+          matchId: gameMatchId,
+          reason: 'peer_left',
+          message: 'Karşı taraf ayrıldı.',
+        });
+        
+        // Oyunu temizle
+        cardGames.delete(gameMatchId);
+        
+        // Match'i DB'de sonlandır
+        prisma.match.update({
+          where: { id: gameMatchId },
+          data: { 
+            endedAt: new Date(),
+            endReason: 'USER_ENDED',
+          },
+        }).catch(err => {
+          console.error('[Matchmaking] Failed to update match end status:', err);
+        });
+        
+        break;
+      }
     }
     
     // Odadan da çık
@@ -406,6 +458,8 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
 
   socket.on('disconnect', () => {
     console.log('[Matchmaking] Socket disconnected:', socket.id);
+    
+    // 1. Kuyruktan çıkar
     const idx = matchmakingQueue.findIndex((q) => q.socketId === socket.id);
     if (idx >= 0) {
       const removed = matchmakingQueue.splice(idx, 1)[0];
@@ -413,6 +467,56 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
         userId: removed.userId, 
         newQueueSize: matchmakingQueue.length 
       });
+    }
+    
+    // 2. Aktif kart oyununda mı kontrol et ve peer'a bildir
+    for (const [matchId, game] of cardGames.entries()) {
+      let disconnectedUserId: string | null = null;
+      let peerSocketId: string | null = null;
+      let peerId: string | null = null;
+      
+      if (game.user1SocketId === socket.id) {
+        disconnectedUserId = game.user1Id;
+        peerSocketId = game.user2SocketId;
+        peerId = game.user2Id;
+      } else if (game.user2SocketId === socket.id) {
+        disconnectedUserId = game.user2Id;
+        peerSocketId = game.user1SocketId;
+        peerId = game.user1Id;
+      }
+      
+      if (disconnectedUserId && peerId) {
+        console.log('[Matchmaking] User disconnected during card game:', {
+          matchId,
+          disconnectedUserId,
+          peerId,
+        });
+        
+        // Peer'a bildir
+        io.to(peerId).emit('match:ended', {
+          matchId,
+          reason: 'peer_disconnected',
+          message: 'Karşı taraf bağlantısını kaybetti.',
+        });
+        
+        console.log('[Matchmaking] match:ended emitted to peer:', peerId);
+        
+        // Oyunu temizle
+        cardGames.delete(matchId);
+        
+        // Match'i DB'de sonlandır
+        prisma.match.update({
+          where: { id: matchId },
+          data: { 
+            endedAt: new Date(),
+            endReason: 'DISCONNECTED',
+          },
+        }).catch(err => {
+          console.error('[Matchmaking] Failed to update match end status:', err);
+        });
+        
+        break; // Bir kullanıcı sadece bir oyunda olabilir
+      }
     }
   });
 }
@@ -531,10 +635,13 @@ async function tryMatch(io: Server) {
 
       console.log('[Matchmaking] match:found emitted to both users');
 
-      io.to(userA.id).emit('cards:init', { cards });
-      io.to(userB.id).emit('cards:init', { cards });
-
-      console.log('[Matchmaking] cards:init emitted to both users');
+      // Kısa gecikme ile cards:init gönder - client'ın CardGateScreen'e navigate etmesi için zaman ver
+      setTimeout(() => {
+        console.log('[Matchmaking] Sending cards:init after delay...');
+        io.to(userA.id).emit('cards:init', { cards });
+        io.to(userB.id).emit('cards:init', { cards });
+        console.log('[Matchmaking] cards:init emitted to both users');
+      }, 500);
 
       matchmakingQueue.splice(j, 1);
       matchmakingQueue.splice(i, 1);

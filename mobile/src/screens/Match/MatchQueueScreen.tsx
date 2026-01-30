@@ -47,12 +47,19 @@ const MatchQueueScreen: React.FC<Props> = ({ navigation }) => {
       Alert.alert(title, message, [{ text: 'Tamam', onPress: () => navigation.goBack() }]);
     });
 
+    // match:ended event (eşleşme sırasında peer ayrılırsa)
+    socket.on('match:ended', (payload: { reason: string; message?: string }) => {
+      console.log('[MatchQueue] match:ended received:', payload);
+      // Arama ekranında isek sadece log, kullanıcı zaten aranıyor durumunda
+    });
+
     return () => {
       // Cleanup: kuyruktan çık
       console.log('[MatchQueue] Leaving queue for userId:', user.id);
       socket.emit('match:leave', { userId: user.id });
       socket.off('match:found');
       socket.off('match:blocked');
+      socket.off('match:ended');
     };
   }, [navigation, user]);
 

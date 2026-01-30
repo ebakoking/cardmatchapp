@@ -5,6 +5,7 @@ import { prisma } from '../prisma';
 import { validateBody } from '../utils/validation';
 import { verifyJwt } from '../utils/jwt';
 import { saveVerificationVideo } from '../services/verification';
+import { emitToUser } from '../socket/io';
 
 const router = Router();
 const upload = multer();
@@ -981,6 +982,22 @@ router.post('/photos/:photoId/unlock', authMiddleware, async (req: any, res) => 
     ]);
 
     console.log('[PhotoUnlock] Transaction completed successfully');
+
+    // Fotoğraf sahibinin güncel spark bilgilerini al
+    const updatedOwner = await prisma.user.findUnique({
+      where: { id: ownerId },
+      select: { monthlySparksEarned: true, totalSparksEarned: true },
+    });
+
+    // Fotoğraf sahibine real-time spark bildirimi gönder
+    emitToUser(ownerId, 'spark:earned', {
+      amount: sparkAmount,
+      monthlySparksEarned: updatedOwner?.monthlySparksEarned || 0,
+      totalSparksEarned: updatedOwner?.totalSparksEarned || 0,
+      reason: 'photo_unlock',
+      photoId,
+      fromUserId: viewerId,
+    });
 
     // Güncel bakiyeyi al
     const updatedViewer = await prisma.user.findUnique({

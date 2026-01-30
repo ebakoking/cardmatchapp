@@ -21,6 +21,7 @@ import rewardsRouter from './routes/rewards';
 import { registerMatchmakingHandlers } from './socket/matchmaking';
 import { registerChatHandlers } from './socket/chat';
 import { registerFriendsHandlers } from './socket/friends';
+import { setIO } from './socket/io';
 import { FEATURES, METRICS } from './config/features';
 
 const app = express();
@@ -32,6 +33,9 @@ const io = new Server(server, {
     methods: ['GET', 'POST'],
   },
 });
+
+// Socket.IO instance'ını global olarak paylaş
+setIO(io);
 
 // Middleware
 app.use(cors());

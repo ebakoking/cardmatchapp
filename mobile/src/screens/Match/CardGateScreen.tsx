@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { ChatStackParamList } from '../../navigation';
@@ -8,6 +8,12 @@ import { FONTS } from '../../theme/fonts';
 import { SPACING } from '../../theme/spacing';
 import { getSocket } from '../../services/socket';
 import { useAuth } from '../../context/AuthContext';
+
+interface MatchEndedPayload {
+  matchId: string;
+  reason: 'peer_disconnected' | 'peer_left' | 'timeout' | string;
+  message?: string;
+}
 
 type Props = NativeStackScreenProps<ChatStackParamList, 'CardGate'>;
 
@@ -25,10 +31,14 @@ const CardGateScreen: React.FC<Props> = ({ route, navigation }) => {
 
   useEffect(() => {
     const socket = getSocket();
+    console.log('[CardGate] Setting up listeners for matchId:', matchId);
 
     // Assume server sends selected cards on match
     socket.on('cards:init', (payload: { cards: Card[] }) => {
-      setCards(payload.cards);
+      console.log('[CardGate] cards:init received:', payload.cards?.length, 'cards');
+      if (payload.cards && payload.cards.length > 0) {
+        setCards(payload.cards);
+      }
     });
     socket.on(
       'chat:unlocked',
@@ -44,13 +54,66 @@ const CardGateScreen: React.FC<Props> = ({ route, navigation }) => {
         });
       },
     );
-    socket.on('match:ended', () => {
-      navigation.popToTop();
+    socket.on('match:ended', (payload: MatchEndedPayload) => {
+      console.log('[CardGate] match:ended received:', payload);
+      
+      // Kullanıcıya bilgi ver ve yeni arama seçeneği sun
+      const reasonText = payload.reason === 'peer_disconnected' 
+        ? 'Karşı taraf bağlantısını kaybetti.'
+        : payload.reason === 'peer_left'
+        ? 'Karşı taraf ayrıldı.'
+        : payload.reason === 'timeout'
+        ? 'Süre doldu.'
+        : payload.message || 'Eşleşme sona erdi.';
+      
+      Alert.alert(
+        'Eşleşme Sona Erdi',
+        reasonText,
+        [
+          {
+            text: 'Yeni Eşleşme Ara',
+            onPress: () => {
+              // Önce ana ekrana dön, sonra yeni arama başlat
+              navigation.popToTop();
+              // Kısa gecikme ile yeni aramaya yönlendir
+              setTimeout(() => {
+                navigation.navigate('MatchQueue');
+              }, 300);
+            },
+          },
+          {
+            text: 'Ana Sayfa',
+            style: 'cancel',
+            onPress: () => navigation.popToTop(),
+          },
+        ]
+      );
     });
 
     // Ekran açıldığında kartları tekrar iste (cards:init'i kaçırmış olabiliriz)
     if (user) {
+      console.log('[CardGate] Emitting cards:request for matchId:', matchId);
       socket.emit('cards:request', { matchId, userId: user.id });
+      
+      // Kartlar gelmezse tekrar dene (500ms sonra)
+      const retryTimeout = setTimeout(() => {
+        console.log('[CardGate] Retrying cards:request...');
+        socket.emit('cards:request', { matchId, userId: user.id });
+      }, 500);
+      
+      // 3 saniye sonra hala yoksa bir kez daha dene
+      const secondRetryTimeout = setTimeout(() => {
+        console.log('[CardGate] Second retry for cards:request...');
+        socket.emit('cards:request', { matchId, userId: user.id });
+      }, 3000);
+      
+      return () => {
+        clearTimeout(retryTimeout);
+        clearTimeout(secondRetryTimeout);
+        socket.off('cards:init');
+        socket.off('chat:unlocked');
+        socket.off('match:ended');
+      };
     }
 
     return () => {
