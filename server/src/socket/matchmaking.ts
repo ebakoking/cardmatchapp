@@ -379,21 +379,45 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
     'cards:request',
     (payload: { matchId: string; userId: string }) => {
       const { matchId, userId } = payload;
-      console.log('[Matchmaking] cards:request received:', { matchId, userId, socketId: socket.id });
-      console.log('[Matchmaking] Active card games:', Array.from(cardGames.keys()));
+      console.log('[Matchmaking] ========== CARDS REQUEST ==========');
+      console.log('[Matchmaking] matchId:', matchId);
+      console.log('[Matchmaking] userId:', userId);
+      console.log('[Matchmaking] socketId:', socket.id);
+      console.log('[Matchmaking] Active games count:', cardGames.size);
+      console.log('[Matchmaking] Active game IDs:', Array.from(cardGames.keys()));
       
       const game = cardGames.get(matchId);
       if (!game) {
-        console.log('[Matchmaking] Game not found for matchId:', matchId);
+        console.log('[Matchmaking] ERROR: Game not found for matchId:', matchId);
+        // Kullanıcıya hata bildir
+        socket.emit('cards:error', { 
+          matchId, 
+          error: 'Game not found',
+          message: 'Oyun bulunamadı. Lütfen yeniden eşleşme arayın.' 
+        });
         return;
       }
+      
+      console.log('[Matchmaking] Game found:', {
+        matchId: game.matchId,
+        user1Id: game.user1Id,
+        user2Id: game.user2Id,
+        cardsCount: game.cards.length,
+      });
+      
       if (userId !== game.user1Id && userId !== game.user2Id) {
-        console.log('[Matchmaking] User not in game:', { userId, game_user1: game.user1Id, game_user2: game.user2Id });
+        console.log('[Matchmaking] ERROR: User not in game:', { userId, game_user1: game.user1Id, game_user2: game.user2Id });
+        socket.emit('cards:error', { 
+          matchId, 
+          error: 'User not in game',
+          message: 'Bu oyunda değilsiniz.' 
+        });
         return;
       }
 
-      console.log('[Matchmaking] Sending cards:init to socket:', socket.id, 'cards count:', game.cards.length);
+      console.log('[Matchmaking] SUCCESS: Sending cards:init to socket:', socket.id, 'cards count:', game.cards.length);
       socket.emit('cards:init', { cards: game.cards });
+      console.log('[Matchmaking] cards:init sent successfully');
     },
   );
 
@@ -617,31 +641,66 @@ async function tryMatch(io: Server) {
         answers: {},
       });
 
-      console.log(`[Matchmaking] MATCH FOUND! ${userA.nickname} <-> ${userB.nickname}`, {
-        matchId: match.id,
-        user1: { id: userA.id, nickname: userA.nickname },
-        user2: { id: userB.id, nickname: userB.nickname },
-      });
+      console.log(`[Matchmaking] ========== MATCH FOUND ==========`);
+      console.log(`[Matchmaking] Match ID: ${match.id}`);
+      console.log(`[Matchmaking] User1: ${userA.nickname} (${userA.id}), socket: ${a.socketId}`);
+      console.log(`[Matchmaking] User2: ${userB.nickname} (${userB.id}), socket: ${b.socketId}`);
+      console.log(`[Matchmaking] Cards count: ${cards.length}`);
 
-      // Daha güvenilir: userId odalarına emit et
-      io.to(userA.id).emit('match:found', {
-        matchId: match.id,
-        partnerNickname: userB.nickname,
-      });
-      io.to(userB.id).emit('match:found', {
-        matchId: match.id,
-        partnerNickname: userA.nickname,
-      });
+      // Socket'leri userId odalarına join et (güvenlik için tekrar)
+      const socketA = io.sockets.sockets.get(a.socketId);
+      const socketB = io.sockets.sockets.get(b.socketId);
+      
+      if (socketA) {
+        socketA.join(userA.id);
+        console.log(`[Matchmaking] Socket A (${a.socketId}) joined room ${userA.id}`);
+      } else {
+        console.log(`[Matchmaking] WARNING: Socket A not found for ${a.socketId}`);
+      }
+      
+      if (socketB) {
+        socketB.join(userB.id);
+        console.log(`[Matchmaking] Socket B (${b.socketId}) joined room ${userB.id}`);
+      } else {
+        console.log(`[Matchmaking] WARNING: Socket B not found for ${b.socketId}`);
+      }
 
-      console.log('[Matchmaking] match:found emitted to both users');
+      // match:found emit - hem room'a hem direkt socket'e
+      const matchFoundPayloadA = { matchId: match.id, partnerNickname: userB.nickname };
+      const matchFoundPayloadB = { matchId: match.id, partnerNickname: userA.nickname };
+      
+      // Room'a emit
+      io.to(userA.id).emit('match:found', matchFoundPayloadA);
+      io.to(userB.id).emit('match:found', matchFoundPayloadB);
+      
+      // Direkt socket'e de emit (backup)
+      socketA?.emit('match:found', matchFoundPayloadA);
+      socketB?.emit('match:found', matchFoundPayloadB);
+
+      console.log('[Matchmaking] match:found emitted to both users (room + direct)');
 
       // Kısa gecikme ile cards:init gönder - client'ın CardGateScreen'e navigate etmesi için zaman ver
       setTimeout(() => {
-        console.log('[Matchmaking] Sending cards:init after delay...');
-        io.to(userA.id).emit('cards:init', { cards });
-        io.to(userB.id).emit('cards:init', { cards });
-        console.log('[Matchmaking] cards:init emitted to both users');
-      }, 500);
+        console.log('[Matchmaking] ========== SENDING CARDS ==========');
+        console.log('[Matchmaking] Game still exists:', cardGames.has(match.id));
+        
+        const cardsPayload = { cards };
+        
+        // Room'a emit
+        io.to(userA.id).emit('cards:init', cardsPayload);
+        io.to(userB.id).emit('cards:init', cardsPayload);
+        
+        // Direkt socket'e de emit (backup) - socket hala varsa
+        const currentSocketA = io.sockets.sockets.get(a.socketId);
+        const currentSocketB = io.sockets.sockets.get(b.socketId);
+        
+        currentSocketA?.emit('cards:init', cardsPayload);
+        currentSocketB?.emit('cards:init', cardsPayload);
+        
+        console.log('[Matchmaking] cards:init emitted to both users (room + direct)');
+        console.log('[Matchmaking] Socket A still connected:', !!currentSocketA);
+        console.log('[Matchmaking] Socket B still connected:', !!currentSocketB);
+      }, 800); // 500ms'den 800ms'ye çıkardık
 
       matchmakingQueue.splice(j, 1);
       matchmakingQueue.splice(i, 1);
