@@ -770,6 +770,16 @@ router.get('/friends/:friendId/profile', authMiddleware, async (req: any, res) =
     });
   }
 
+  // Hangi fotoğraflar bu kullanıcı tarafından açılmış?
+  const unlockedPhotos = await prisma.photoUnlock.findMany({
+    where: {
+      viewerId: userId,
+      ownerId: friendId,
+    },
+    select: { photoId: true },
+  });
+  const unlockedPhotoIds = new Set(unlockedPhotos.map((u) => u.photoId));
+
   // Arkadaş olduğu için detayları göster
   return res.json({
     success: true,
@@ -786,12 +796,197 @@ router.get('/friends/:friendId/profile', authMiddleware, async (req: any, res) =
         id: p.id,
         url: p.url,
         order: p.order,
+        caption: p.caption,
+        isUnlocked: unlockedPhotoIds.has(p.id),
       })),
       friendshipId: friendship.id,
       friendsSince: friendship.createdAt,
       // Spark bilgileri
       monthlySparksEarned: friend.monthlySparksEarned,
       totalSparksEarned: friend.totalSparksEarned,
+    },
+  });
+});
+
+// ============ FOTOĞRAF AÇMA (UNLOCK) ============
+const PHOTO_UNLOCK_COST = 5; // Fotoğraf açma maliyeti (jeton)
+const SPARK_REWARD_RATIO = 1.0; // Harcanan jetonun %100'ü spark olarak sahibine gider
+
+router.post('/photos/:photoId/unlock', authMiddleware, async (req: any, res) => {
+  const viewerId = req.user.userId;
+  const { photoId } = req.params;
+
+  try {
+    // 1. Fotoğrafı bul
+    const photo = await prisma.photo.findUnique({
+      where: { id: photoId },
+      include: { user: true },
+    });
+
+    if (!photo) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Fotoğraf bulunamadı.' },
+      });
+    }
+
+    const ownerId = photo.userId;
+
+    // 2. Kendi fotoğrafını açmaya çalışıyorsa izin ver (ücretsiz)
+    if (ownerId === viewerId) {
+      return res.json({
+        success: true,
+        data: {
+          photo: {
+            id: photo.id,
+            url: photo.url,
+            caption: photo.caption,
+            isUnlocked: true,
+          },
+          cost: 0,
+          message: 'Kendi fotoğrafın.',
+        },
+      });
+    }
+
+    // 3. Arkadaşlık kontrolü
+    const friendship = await prisma.friendship.findFirst({
+      where: {
+        OR: [
+          { user1Id: viewerId, user2Id: ownerId },
+          { user1Id: ownerId, user2Id: viewerId },
+        ],
+      },
+    });
+
+    if (!friendship) {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'NOT_FRIEND', message: 'Profili görmek için arkadaş olmalısın.' },
+      });
+    }
+
+    // 4. Daha önce açılmış mı?
+    const existingUnlock = await prisma.photoUnlock.findUnique({
+      where: {
+        photoId_viewerId: {
+          photoId,
+          viewerId,
+        },
+      },
+    });
+
+    if (existingUnlock) {
+      // Zaten açılmış - idempotent success
+      return res.json({
+        success: true,
+        data: {
+          photo: {
+            id: photo.id,
+            url: photo.url,
+            caption: photo.caption,
+            isUnlocked: true,
+          },
+          cost: 0,
+          message: 'Bu fotoğrafı daha önce açtın.',
+          alreadyUnlocked: true,
+        },
+      });
+    }
+
+    // 5. Bakiye kontrolü
+    const viewer = await prisma.user.findUnique({
+      where: { id: viewerId },
+      select: { tokenBalance: true },
+    });
+
+    if (!viewer || viewer.tokenBalance < PHOTO_UNLOCK_COST) {
+      return res.status(402).json({
+        success: false,
+        error: { 
+          code: 'INSUFFICIENT_BALANCE', 
+          message: 'Yeterli jetonun yok.',
+          required: PHOTO_UNLOCK_COST,
+          current: viewer?.tokenBalance || 0,
+        },
+      });
+    }
+
+    // 6. Transaction: Jeton düş, spark ekle, unlock kaydet
+    const sparkAmount = Math.floor(PHOTO_UNLOCK_COST * SPARK_REWARD_RATIO);
+
+    await prisma.$transaction([
+      // Görüntüleyenin bakiyesini düşür
+      prisma.user.update({
+        where: { id: viewerId },
+        data: { tokenBalance: { decrement: PHOTO_UNLOCK_COST } },
+      }),
+      // Fotoğraf sahibine spark ekle
+      prisma.user.update({
+        where: { id: ownerId },
+        data: { 
+          monthlySparksEarned: { increment: sparkAmount },
+          totalSparksEarned: { increment: sparkAmount },
+        },
+      }),
+      // Unlock kaydı oluştur
+      prisma.photoUnlock.create({
+        data: {
+          photoId,
+          viewerId,
+          ownerId,
+          tokenCost: PHOTO_UNLOCK_COST,
+          sparkAmount,
+        },
+      }),
+      // Spark transaction log
+      prisma.sparkTransaction.create({
+        data: {
+          fromUserId: viewerId,
+          toUserId: ownerId,
+          photoId,
+          amount: sparkAmount,
+          reason: 'photo_unlock',
+        },
+      }),
+    ]);
+
+    // Güncel bakiyeyi al
+    const updatedViewer = await prisma.user.findUnique({
+      where: { id: viewerId },
+      select: { tokenBalance: true },
+    });
+
+    return res.json({
+      success: true,
+      data: {
+        photo: {
+          id: photo.id,
+          url: photo.url,
+          caption: photo.caption,
+          isUnlocked: true,
+        },
+        cost: PHOTO_UNLOCK_COST,
+        sparkAwarded: sparkAmount,
+        newBalance: updatedViewer?.tokenBalance || 0,
+        message: 'Fotoğraf açıldı!',
+      },
+    });
+  } catch (error) {
+    console.error('Photo unlock error:', error);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: 'Bir hata oluştu.' },
+    });
+  }
+});
+
+// ============ FOTOĞRAF AÇMA MALİYETİ ============
+router.get('/photos/unlock-cost', authMiddleware, async (req: any, res) => {
+  return res.json({
+    success: true,
+    data: {
+      cost: PHOTO_UNLOCK_COST,
     },
   });
 });

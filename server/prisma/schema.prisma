@@ -174,11 +174,45 @@ model Photo {
   url       String
   order     Int
   approved  Boolean @default(false)
+  caption   String? @db.VarChar(150)  // Fotoğraf açıklaması
   createdAt DateTime @default(now())
 
   user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  unlocks   PhotoUnlock[]
 
   @@index([userId])
+}
+
+// Fotoğraf açma kayıtları (hangi kullanıcı hangi fotoğrafı açtı)
+model PhotoUnlock {
+  id          String   @id @default(uuid())
+  photoId     String
+  viewerId    String   // Fotoğrafı açan kullanıcı
+  ownerId     String   // Fotoğrafın sahibi
+  tokenCost   Int      // Harcanan jeton
+  sparkAmount Int      // Sahibine verilen spark
+  createdAt   DateTime @default(now())
+
+  photo       Photo    @relation(fields: [photoId], references: [id], onDelete: Cascade)
+
+  @@unique([photoId, viewerId])  // Aynı fotoğraf aynı kişi tarafından bir kez açılabilir
+  @@index([viewerId])
+  @@index([ownerId])
+}
+
+// Spark işlem geçmişi (leaderboard ve audit için)
+model SparkTransaction {
+  id          String   @id @default(uuid())
+  fromUserId  String   // Spark gönderen (fotoğrafı açan)
+  toUserId    String   // Spark alan (fotoğraf sahibi)
+  photoId     String?  // İlgili fotoğraf (varsa)
+  amount      Int      // Spark miktarı
+  reason      String   // 'photo_unlock', 'gift', vb.
+  createdAt   DateTime @default(now())
+
+  @@index([fromUserId])
+  @@index([toUserId])
+  @@index([createdAt])
 }
 
 model VerificationVideo {

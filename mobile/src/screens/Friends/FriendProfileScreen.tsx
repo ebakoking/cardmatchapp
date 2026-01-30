@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   Image,
   Alert,
   ActivityIndicator,
+  Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -16,9 +17,22 @@ import { COLORS } from '../../theme/colors';
 import { FONTS } from '../../theme/fonts';
 import { SPACING } from '../../theme/spacing';
 import { api } from '../../services/api';
-import ProfilePhoto from '../../components/ProfilePhoto';
+import { useAuth } from '../../context/AuthContext';
+import BlurredPhoto from '../../components/BlurredPhoto';
 
 type Props = NativeStackScreenProps<any, 'FriendProfile'>;
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const PHOTO_SIZE = (SCREEN_WIDTH - SPACING.md * 3) / 2; // 2 sütunlu grid
+const PHOTO_UNLOCK_COST = 5; // Backend ile senkron olmalı
+
+interface ProfilePhoto {
+  id: string;
+  url: string;
+  order: number;
+  caption?: string;
+  isUnlocked: boolean;
+}
 
 interface FriendProfile {
   id: string;
@@ -28,7 +42,7 @@ interface FriendProfile {
   isPrime: boolean;
   isOnline: boolean;
   verified: boolean;
-  profilePhotos: { id: string; url: string; order: number }[];
+  profilePhotos: ProfilePhoto[];
   friendshipId: string;
   friendsSince: string;
   monthlySparksEarned: number;
@@ -50,13 +64,18 @@ const AVATARS = [
 
 const FriendProfileScreen: React.FC<Props> = ({ route, navigation }) => {
   const { friendId, friendNickname } = route.params || {};
+  const { user, refreshProfile } = useAuth();
   const [profile, setProfile] = useState<FriendProfile | null>(null);
   const [loading, setLoading] = useState(true);
-  const [selectedPhotoIndex, setSelectedPhotoIndex] = useState(0);
+  const [userBalance, setUserBalance] = useState(user?.tokenBalance || 0);
 
   useEffect(() => {
     loadProfile();
   }, [friendId]);
+
+  useEffect(() => {
+    setUserBalance(user?.tokenBalance || 0);
+  }, [user?.tokenBalance]);
 
   const loadProfile = async () => {
     try {
@@ -65,13 +84,70 @@ const FriendProfileScreen: React.FC<Props> = ({ route, navigation }) => {
       if (res.data.success) {
         setProfile(res.data.data);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Profile load error:', error);
-      Alert.alert('Hata', 'Profil yüklenemedi.');
+      if (error.response?.status === 403) {
+        Alert.alert(
+          'Arkadaş Değilsin',
+          'Bu profili görmek için arkadaş olmalısın.',
+          [{ text: 'Tamam', onPress: () => navigation.goBack() }]
+        );
+      } else {
+        Alert.alert('Hata', 'Profil yüklenemedi.');
+      }
     } finally {
       setLoading(false);
     }
   };
+
+  // Fotoğraf açma işlemi
+  const handleUnlockPhoto = useCallback(async (photoId: string): Promise<boolean> => {
+    try {
+      const res = await api.post(`/api/user/photos/${photoId}/unlock`);
+      if (res.data.success) {
+        // Bakiyeyi güncelle
+        setUserBalance(res.data.data.newBalance);
+        
+        // Profili güncelle (fotoğraf artık açık)
+        setProfile(prev => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            profilePhotos: prev.profilePhotos.map(p => 
+              p.id === photoId ? { ...p, isUnlocked: true, caption: res.data.data.photo.caption } : p
+            ),
+          };
+        });
+
+        // Kullanıcı profilini de güncelle (bakiye için)
+        refreshProfile();
+
+        if (!res.data.data.alreadyUnlocked) {
+          Alert.alert('Fotoğraf Açıldı! ✨', `${res.data.data.sparkAwarded} spark karşı tarafa eklendi.`);
+        }
+        return true;
+      }
+      return false;
+    } catch (error: any) {
+      console.error('Photo unlock error:', error);
+      if (error.response?.status === 402) {
+        Alert.alert('Yetersiz Jeton', error.response.data.error.message);
+      } else {
+        Alert.alert('Hata', 'Fotoğraf açılamadı.');
+      }
+      return false;
+    }
+  }, [refreshProfile]);
+
+  // Jeton satın alma sayfasına git
+  const handlePurchaseTokens = useCallback(() => {
+    navigation.navigate('Home', {
+      screen: 'Profile',
+      params: {
+        screen: 'TokenPurchase',
+      },
+    });
+  }, [navigation]);
 
   // Son görülme zamanını formatla
   const formatLastSeen = (lastSeenAt?: string, isOnline?: boolean) => {
@@ -146,9 +222,8 @@ const FriendProfileScreen: React.FC<Props> = ({ route, navigation }) => {
     );
   }
 
-  const currentPhoto = profile.profilePhotos[selectedPhotoIndex]?.url;
   const avatar = getAvatar(profile.avatarId);
-  const hasProfilePhoto = profile.isPrime && profile.profilePhotos.length > 0;
+  const hasProfilePhoto = profile.profilePhotos.length > 0;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
@@ -162,34 +237,14 @@ const FriendProfileScreen: React.FC<Props> = ({ route, navigation }) => {
           <View style={{ width: 24 }} />
         </View>
 
-        {/* Profile Photo or Avatar */}
-        <View style={styles.photoSection}>
-          {hasProfilePhoto ? (
-            <>
-              <Image source={{ uri: currentPhoto }} style={styles.mainPhoto} />
-              {profile.profilePhotos.length > 1 && (
-                <View style={styles.photoIndicators}>
-                  {profile.profilePhotos.map((_, index) => (
-                    <TouchableOpacity 
-                      key={index}
-                      onPress={() => setSelectedPhotoIndex(index)}
-                      style={[
-                        styles.photoIndicator,
-                        index === selectedPhotoIndex && styles.photoIndicatorActive
-                      ]}
-                    />
-                  ))}
-                </View>
-              )}
-            </>
-          ) : (
-            <View style={[styles.avatarContainer, { backgroundColor: avatar.color }]}>
-              <Text style={styles.avatarEmoji}>{avatar.emoji}</Text>
-            </View>
-          )}
+        {/* Avatar Section */}
+        <View style={styles.avatarSection}>
+          <View style={[styles.avatarContainer, { backgroundColor: avatar.color }]}>
+            <Text style={styles.avatarEmoji}>{avatar.emoji}</Text>
+          </View>
           
           {/* Badges */}
-          <View style={styles.badges}>
+          <View style={styles.badgesRow}>
             {profile.isPrime && (
               <View style={styles.badge}>
                 <Ionicons name="star" size={14} color="#FFD700" />
@@ -204,6 +259,32 @@ const FriendProfileScreen: React.FC<Props> = ({ route, navigation }) => {
             )}
           </View>
         </View>
+
+        {/* Photo Grid (Blurred by default) */}
+        {hasProfilePhoto && (
+          <View style={styles.photoGridSection}>
+            <Text style={styles.sectionTitle}>📸 Fotoğraflar</Text>
+            <Text style={styles.photoHint}>
+              Fotoğrafları görmek için {PHOTO_UNLOCK_COST} jeton harcanır
+            </Text>
+            <View style={styles.photoGrid}>
+              {profile.profilePhotos.map((photo) => (
+                <BlurredPhoto
+                  key={photo.id}
+                  photoId={photo.id}
+                  photoUrl={photo.url}
+                  caption={photo.caption}
+                  isUnlocked={photo.isUnlocked}
+                  unlockCost={PHOTO_UNLOCK_COST}
+                  userBalance={userBalance}
+                  onUnlock={handleUnlockPhoto}
+                  onPurchaseTokens={handlePurchaseTokens}
+                  style={styles.gridPhoto}
+                />
+              ))}
+            </View>
+          </View>
+        )}
 
         {/* Online Status */}
         <View style={styles.statusCard}>
@@ -308,48 +389,45 @@ const styles = StyleSheet.create({
   backButton: {
     padding: SPACING.xs,
   },
-  photoSection: {
+  avatarSection: {
     alignItems: 'center',
     marginBottom: SPACING.lg,
   },
-  mainPhoto: {
-    width: '100%',
-    height: 350,
-    resizeMode: 'cover',
-  },
   avatarContainer: {
-    width: 200,
-    height: 200,
-    borderRadius: 100,
+    width: 120,
+    height: 120,
+    borderRadius: 60,
     justifyContent: 'center',
     alignItems: 'center',
-    marginVertical: SPACING.xl,
+    marginVertical: SPACING.md,
   },
   avatarEmoji: {
-    fontSize: 100,
+    fontSize: 60,
   },
-  photoIndicators: {
+  badgesRow: {
     flexDirection: 'row',
-    position: 'absolute',
-    bottom: SPACING.md,
-    gap: 6,
-  },
-  photoIndicator: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: 'rgba(255,255,255,0.5)',
-  },
-  photoIndicatorActive: {
-    backgroundColor: COLORS.primary,
-    width: 24,
-  },
-  badges: {
-    flexDirection: 'row',
-    position: 'absolute',
-    top: SPACING.md,
-    right: SPACING.md,
     gap: SPACING.xs,
+    marginTop: SPACING.sm,
+  },
+  // Photo Grid
+  photoGridSection: {
+    marginHorizontal: SPACING.md,
+    marginBottom: SPACING.lg,
+  },
+  photoHint: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+    marginBottom: SPACING.md,
+  },
+  photoGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: SPACING.md,
+  },
+  gridPhoto: {
+    width: PHOTO_SIZE,
+    height: PHOTO_SIZE,
   },
   badge: {
     flexDirection: 'row',
