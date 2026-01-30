@@ -228,6 +228,18 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
         // Böylece socketId değişse bile io.to(userId) ile emit edebileceğiz.
         socket.join(userId);
 
+        // Kullanıcı zaten kuyrukta mı kontrol et - duplicate önleme
+        const existingIdx = matchmakingQueue.findIndex((q) => q.userId === userId);
+        if (existingIdx >= 0) {
+          console.log('[Matchmaking] User already in queue, updating socket:', { userId, oldSocketId: matchmakingQueue[existingIdx].socketId, newSocketId: socket.id });
+          // Eski entry'yi güncelle (yeni socket ID ile)
+          matchmakingQueue[existingIdx].socketId = socket.id;
+          matchmakingQueue[existingIdx].joinedAt = now;
+          socket.emit('match:searching');
+          await tryMatch(io);
+          return;
+        }
+
         // Queue entry oluştur - filtre değerlerini logla
         const queueEntry: QueueEntry = {
           userId,
@@ -253,12 +265,15 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
             : undefined,
         };
         
-        console.log(`[Matchmaking] User joining queue:`, {
+        matchmakingQueue.push(queueEntry);
+        
+        console.log(`[Matchmaking] User added to queue:`, {
           id: userId,
           nickname: user.nickname,
           isPrime: user.isPrime,
           age: user.age,
           gender: user.gender,
+          queueSize: matchmakingQueue.length,
           filters: {
             minAge: queueEntry.filterMinAge,
             maxAge: queueEntry.filterMaxAge,
@@ -266,10 +281,10 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
             gender: queueEntry.filterGender,
           }
         });
-        
-        matchmakingQueue.push(queueEntry);
 
         socket.emit('match:searching');
+        console.log('[Matchmaking] match:searching emitted to user:', userId);
+        
         await tryMatch(io);
       } catch {
         socket.emit('error', {
@@ -372,10 +387,32 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
     },
   );
 
-  socket.on('disconnect', () => {
-    const idx = matchmakingQueue.findIndex((q) => q.socketId === socket.id);
+  // Kuyruktan çık (kullanıcı iptal etti)
+  socket.on('match:leave', (payload: { userId: string }) => {
+    const { userId } = payload;
+    console.log('[Matchmaking] match:leave received:', { userId, socketId: socket.id });
+    
+    const idx = matchmakingQueue.findIndex((q) => q.userId === userId);
     if (idx >= 0) {
       matchmakingQueue.splice(idx, 1);
+      console.log('[Matchmaking] User removed from queue:', { userId, newQueueSize: matchmakingQueue.length });
+    } else {
+      console.log('[Matchmaking] User was not in queue:', { userId });
+    }
+    
+    // Odadan da çık
+    socket.leave(userId);
+  });
+
+  socket.on('disconnect', () => {
+    console.log('[Matchmaking] Socket disconnected:', socket.id);
+    const idx = matchmakingQueue.findIndex((q) => q.socketId === socket.id);
+    if (idx >= 0) {
+      const removed = matchmakingQueue.splice(idx, 1)[0];
+      console.log('[Matchmaking] User removed from queue on disconnect:', { 
+        userId: removed.userId, 
+        newQueueSize: matchmakingQueue.length 
+      });
     }
   });
 }
@@ -395,16 +432,28 @@ async function pickCards(): Promise<CardPayload[]> {
 }
 
 async function tryMatch(io: Server) {
-  if (matchmakingQueue.length < 2) return;
+  console.log('[Matchmaking] tryMatch called, queue size:', matchmakingQueue.length);
+  
+  if (matchmakingQueue.length < 2) {
+    console.log('[Matchmaking] Not enough users in queue, waiting...');
+    return;
+  }
+
+  console.log('[Matchmaking] Queue users:', matchmakingQueue.map(q => q.userId));
 
   for (let i = 0; i < matchmakingQueue.length; i++) {
     for (let j = i + 1; j < matchmakingQueue.length; j++) {
       const a = matchmakingQueue[i];
       const b = matchmakingQueue[j];
 
+      console.log(`[Matchmaking] Checking pair: ${a.userId} <-> ${b.userId}`);
+
       const userA = await prisma.user.findUnique({ where: { id: a.userId } });
       const userB = await prisma.user.findUnique({ where: { id: b.userId } });
-      if (!userA || !userB) continue;
+      if (!userA || !userB) {
+        console.log('[Matchmaking] User not found in DB, skipping pair');
+        continue;
+      }
 
       // Geliştirme aşaması için eşleştirme kurallarını MINIMUM'a indiriyoruz.
       // Prod'da: verified, status, block, 7 gün history, gender match, plus filtreleri tekrar açılmalı.
@@ -464,6 +513,12 @@ async function tryMatch(io: Server) {
         answers: {},
       });
 
+      console.log(`[Matchmaking] MATCH FOUND! ${userA.nickname} <-> ${userB.nickname}`, {
+        matchId: match.id,
+        user1: { id: userA.id, nickname: userA.nickname },
+        user2: { id: userB.id, nickname: userB.nickname },
+      });
+
       // Daha güvenilir: userId odalarına emit et
       io.to(userA.id).emit('match:found', {
         matchId: match.id,
@@ -474,12 +529,20 @@ async function tryMatch(io: Server) {
         partnerNickname: userA.nickname,
       });
 
+      console.log('[Matchmaking] match:found emitted to both users');
+
       io.to(userA.id).emit('cards:init', { cards });
       io.to(userB.id).emit('cards:init', { cards });
 
+      console.log('[Matchmaking] cards:init emitted to both users');
+
       matchmakingQueue.splice(j, 1);
       matchmakingQueue.splice(i, 1);
+      
+      console.log('[Matchmaking] Users removed from queue, new size:', matchmakingQueue.length);
       return;
     }
   }
+  
+  console.log('[Matchmaking] No match found in this round');
 }

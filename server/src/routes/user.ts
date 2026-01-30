@@ -816,6 +816,8 @@ router.post('/photos/:photoId/unlock', authMiddleware, async (req: any, res) => 
   const viewerId = req.user.userId;
   const { photoId } = req.params;
 
+  console.log('[PhotoUnlock] Request received:', { viewerId, photoId });
+
   try {
     // 1. Fotoğrafı bul
     const photo = await prisma.photo.findUnique({
@@ -824,6 +826,7 @@ router.post('/photos/:photoId/unlock', authMiddleware, async (req: any, res) => 
     });
 
     if (!photo) {
+      console.log('[PhotoUnlock] Photo not found:', photoId);
       return res.status(404).json({
         success: false,
         error: { code: 'NOT_FOUND', message: 'Fotoğraf bulunamadı.' },
@@ -831,6 +834,11 @@ router.post('/photos/:photoId/unlock', authMiddleware, async (req: any, res) => 
     }
 
     const ownerId = photo.userId;
+    console.log('[PhotoUnlock] Roles identified:', { 
+      viewerId, 
+      ownerId, 
+      viewerIsOwner: viewerId === ownerId 
+    });
 
     // 2. Kendi fotoğrafını açmaya çalışıyorsa izin ver (ücretsiz)
     if (ownerId === viewerId) {
@@ -877,20 +885,34 @@ router.post('/photos/:photoId/unlock', authMiddleware, async (req: any, res) => 
     });
 
     if (existingUnlock) {
+      console.log('[PhotoUnlock] Already unlocked:', { viewerId, photoId });
       // Zaten açılmış - idempotent success
+      const responseData: any = {
+        photo: {
+          id: photo.id,
+          url: photo.url,
+          caption: photo.caption,
+          isUnlocked: true,
+        },
+        cost: 0,
+        message: 'Bu fotoğrafı daha önce açtın.',
+        alreadyUnlocked: true,
+      };
+
+      // Dev ortamında debug bilgisi ekle
+      if (process.env.NODE_ENV !== 'production') {
+        responseData._debug = {
+          chargedUserId: viewerId,
+          ownerUserId: ownerId,
+          amount: 0,
+          alreadyUnlocked: true,
+          previousUnlockId: existingUnlock.id,
+        };
+      }
+
       return res.json({
         success: true,
-        data: {
-          photo: {
-            id: photo.id,
-            url: photo.url,
-            caption: photo.caption,
-            isUnlocked: true,
-          },
-          cost: 0,
-          message: 'Bu fotoğrafı daha önce açtın.',
-          alreadyUnlocked: true,
-        },
+        data: responseData,
       });
     }
 
@@ -914,6 +936,13 @@ router.post('/photos/:photoId/unlock', authMiddleware, async (req: any, res) => 
 
     // 6. Transaction: Jeton düş, spark ekle, unlock kaydet
     const sparkAmount = Math.floor(PHOTO_UNLOCK_COST * SPARK_REWARD_RATIO);
+
+    console.log('[PhotoUnlock] Executing transaction:', {
+      chargedUserId: viewerId,
+      ownerUserId: ownerId,
+      cost: PHOTO_UNLOCK_COST,
+      sparkAmount,
+    });
 
     await prisma.$transaction([
       // Görüntüleyenin bakiyesini düşür
@@ -951,29 +980,43 @@ router.post('/photos/:photoId/unlock', authMiddleware, async (req: any, res) => 
       }),
     ]);
 
+    console.log('[PhotoUnlock] Transaction completed successfully');
+
     // Güncel bakiyeyi al
     const updatedViewer = await prisma.user.findUnique({
       where: { id: viewerId },
       select: { tokenBalance: true },
     });
 
+    const responseData: any = {
+      photo: {
+        id: photo.id,
+        url: photo.url,
+        caption: photo.caption,
+        isUnlocked: true,
+      },
+      cost: PHOTO_UNLOCK_COST,
+      sparkAwarded: sparkAmount,
+      newBalance: updatedViewer?.tokenBalance || 0,
+      message: 'Fotoğraf açıldı!',
+    };
+
+    // Dev ortamında debug bilgisi ekle
+    if (process.env.NODE_ENV !== 'production') {
+      responseData._debug = {
+        chargedUserId: viewerId,
+        ownerUserId: ownerId,
+        amount: PHOTO_UNLOCK_COST,
+        alreadyUnlocked: false,
+      };
+    }
+
     return res.json({
       success: true,
-      data: {
-        photo: {
-          id: photo.id,
-          url: photo.url,
-          caption: photo.caption,
-          isUnlocked: true,
-        },
-        cost: PHOTO_UNLOCK_COST,
-        sparkAwarded: sparkAmount,
-        newBalance: updatedViewer?.tokenBalance || 0,
-        message: 'Fotoğraf açıldı!',
-      },
+      data: responseData,
     });
   } catch (error) {
-    console.error('Photo unlock error:', error);
+    console.error('[PhotoUnlock] Error:', error);
     return res.status(500).json({
       success: false,
       error: { code: 'SERVER_ERROR', message: 'Bir hata oluştu.' },

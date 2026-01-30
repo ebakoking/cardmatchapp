@@ -19,14 +19,17 @@ const MatchQueueScreen: React.FC<Props> = ({ navigation }) => {
     const socket = getSocket();
     if (!user) return;
 
+    console.log('[MatchQueue] Joining queue with userId:', user.id);
     socket.emit('match:join', { userId: user.id });
 
     socket.on('match:found', (payload: { matchId: string; partnerNickname: string }) => {
+      console.log('[MatchQueue] Match found:', payload);
       setSearching(false);
       navigation.replace('CardGate', { matchId: payload.matchId });
     });
 
     socket.on('match:blocked', (data: { reason: string; message: string }) => {
+      console.log('[MatchQueue] Match blocked:', data);
       setSearching(false);
       
       // Kullanıcıya hata mesajı göster
@@ -45,13 +48,20 @@ const MatchQueueScreen: React.FC<Props> = ({ navigation }) => {
     });
 
     return () => {
+      // Cleanup: kuyruktan çık
+      console.log('[MatchQueue] Leaving queue for userId:', user.id);
+      socket.emit('match:leave', { userId: user.id });
       socket.off('match:found');
       socket.off('match:blocked');
-      // For full spec we would emit match:leave if implemented on backend
     };
   }, [navigation, user]);
 
   const cancel = () => {
+    const socket = getSocket();
+    if (user) {
+      console.log('[MatchQueue] User cancelled, leaving queue:', user.id);
+      socket.emit('match:leave', { userId: user.id });
+    }
     setSearching(false);
     navigation.goBack();
   };
