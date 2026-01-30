@@ -1,0 +1,18 @@
+{
+  "name": "cardmatch-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev:server": "pnpm --filter server dev",
+    "dev:mobile": "pnpm --filter mobile start",
+    "dev:admin": "pnpm --filter admin dev"
+  },
+  "workspaces": [
+    "server",
+    "mobile",
+    "admin"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

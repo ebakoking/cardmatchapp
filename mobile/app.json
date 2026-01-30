@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "CardMatch",
+    "slug": "cardmatch",
+    "version": "0.1.0",
+    "scheme": "cardmatch",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0B1020"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.cardmatch.app",
+      "buildNumber": "1.0.0",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Profil fotoğrafı ve doğrulama videosu çekmek için kameraya ihtiyacımız var.",
+        "NSMicrophoneUsageDescription": "Sesli ve görüntülü aramalar için mikrofona ihtiyacımız var.",
+        "NSPhotoLibraryUsageDescription": "Profil fotoğrafı yüklemek için fotoğraf galerinize erişmemiz gerekiyor."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0B1020"
+      },
+      "softwareKeyboardLayoutMode": "resize"
+    },
+    "plugins": [
+      "expo-notifications",
+      "expo-camera",
+      "expo-image-picker",
+      "expo-web-browser"
+    ],
+    "extra": {
+      "apiUrl": "http://192.168.1.3:3000",
+      "socketUrl": "ws://192.168.1.3:3000",
+      "revenuecatPublicKey": "REVENUECAT_PUBLIC_KEY"
+    }
+  }
+}

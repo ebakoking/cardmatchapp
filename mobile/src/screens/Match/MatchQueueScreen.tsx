@@ -1,0 +1,92 @@
+import React, { useEffect, useState } from 'react';
+import { View, Text, ActivityIndicator, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { ChatStackParamList } from '../../navigation';
+import { COLORS } from '../../theme/colors';
+import { FONTS } from '../../theme/fonts';
+import { SPACING } from '../../theme/spacing';
+import { getSocket } from '../../services/socket';
+import { useAuth } from '../../context/AuthContext';
+
+type Props = NativeStackScreenProps<ChatStackParamList, 'MatchQueue'>;
+
+const MatchQueueScreen: React.FC<Props> = ({ navigation }) => {
+  const { user } = useAuth();
+  const [searching, setSearching] = useState(true);
+
+  useEffect(() => {
+    const socket = getSocket();
+    if (!user) return;
+
+    socket.emit('match:join', { userId: user.id });
+
+    socket.on('match:found', (payload: { matchId: string; partnerNickname: string }) => {
+      setSearching(false);
+      navigation.replace('CardGate', { matchId: payload.matchId });
+    });
+
+    socket.on('match:blocked', (data: { reason: string; message: string }) => {
+      setSearching(false);
+      
+      // Kullanıcıya hata mesajı göster
+      let title = 'Eşleşme Engellendi';
+      let message = data?.message || 'Şu anda eşleşme yapamazsınız.';
+      
+      if (data?.reason === 'DAILY_LIMIT') {
+        title = 'Günlük Limit';
+        message = 'Günlük sohbet limitinizi doldurdunuz. Prime üye olarak sınırsız sohbet başlatabilirsiniz!';
+      } else if (data?.reason === 'UNVERIFIED') {
+        title = 'Doğrulama Gerekli';
+        message = 'Profiliniz henüz onaylanmadı. Lütfen bekleyin.';
+      }
+      
+      Alert.alert(title, message, [{ text: 'Tamam', onPress: () => navigation.goBack() }]);
+    });
+
+    return () => {
+      socket.off('match:found');
+      socket.off('match:blocked');
+      // For full spec we would emit match:leave if implemented on backend
+    };
+  }, [navigation, user]);
+
+  const cancel = () => {
+    setSearching(false);
+    navigation.goBack();
+  };
+
+  return (
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      <Text style={FONTS.h2}>ARANIYOR...</Text>
+      <ActivityIndicator
+        style={{ marginTop: SPACING.lg }}
+        size="large"
+        color={COLORS.primary}
+      />
+      <TouchableOpacity style={styles.button} onPress={cancel}>
+        <Text style={FONTS.button}>İptal Et</Text>
+      </TouchableOpacity>
+    </SafeAreaView>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: SPACING.xl,
+  },
+  button: {
+    marginTop: SPACING.xl,
+    backgroundColor: COLORS.surface,
+    borderRadius: 999,
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.xl,
+  },
+});
+
+export default MatchQueueScreen;
+

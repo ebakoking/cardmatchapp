@@ -1,0 +1,448 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum InterestedIn {
+  MALE
+  FEMALE
+  BOTH
+}
+
+enum VerificationStatus {
+  NONE
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum UserStatus {
+  ACTIVE
+  SHADOWBANNED
+  BANNED
+}
+
+enum CardCategory {
+  LIFESTYLE
+  VALUES
+  INTERESTS
+  PERSONALITY
+  HUMOR
+}
+
+enum ReportCategory {
+  SPAM
+  HARASSMENT
+  FAKE_PROFILE
+  INAPPROPRIATE_CONTENT
+  OTHER
+}
+
+enum ReportStatus {
+  PENDING
+  REVIEWED
+  ACTIONED
+}
+
+enum RedeemStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AdminRole {
+  SUPER_ADMIN
+  MODERATOR
+}
+
+enum Platform {
+  IOS
+  ANDROID
+}
+
+enum ChatEndReason {
+  CARDS_MISMATCH
+  DISCONNECTED
+  BLOCKED
+  TIMEOUT
+  USER_ENDED
+}
+
+enum MessageType {
+  TEXT
+  MEDIA
+  TOKEN_GIFT
+  SYSTEM
+}
+
+model User {
+  id                     String        @id @default(uuid())
+  phoneNumber            String        @unique
+  nickname               String        @unique
+  age                    Int
+  birthDate              DateTime?     // Doğum tarihi
+  gender                 Gender
+  interestedIn           InterestedIn
+  bio                    String?       @db.VarChar(150)
+  interests              String[]      // İlgi alanları tagleri
+  city                   String
+  country                String        @default("TR")
+  latitude               Float?        // Konum - enlem
+  longitude              Float?        // Konum - boylam
+  avatarId               Int           @default(1)  // 1-8 arası varsayılan avatar
+  authProvider           String        @default("phone") // phone, google, apple
+  profilePhotos          Photo[]
+  verificationVideoUrl   String?
+  verified               Boolean       @default(false)
+  verificationStatus     VerificationStatus @default(NONE)
+  isPlus                 Boolean       @default(false)
+  plusExpiresAt          DateTime?
+  isPrime                Boolean       @default(false)
+  primeExpiry            DateTime?
+  // Prime filtre ayarları
+  filterMinAge           Int           @default(18)
+  filterMaxAge           Int           @default(99)
+  filterMaxDistance      Int           @default(160)  // km cinsinden
+  filterGender           String        @default("BOTH") // MALE, FEMALE, BOTH - Prime üyeler için cinsiyet filtresi
+  tokenBalance           Int           @default(0)
+  monthlyTokensReceived  Int           @default(0)  // Hediye olarak aldığı tokenlar
+  monthlyTokensEarned    Int           @default(0)  // Hediye olarak kazandığı tokenlar
+  totalTokensEarned      Int           @default(0)  // Toplam kazanılan tokenlar (lifetime)
+  monthlySparksEarned    Int           @default(0)  // Medya açılmasından kazanılan sparklar (leaderboard için)
+  totalSparksEarned      Int           @default(0)  // Toplam kazanılan sparklar (lifetime)
+  monthlyResetAt         DateTime      @default(now()) // Son aylık sıfırlama tarihi
+  dailyChatsStarted      Int           @default(0)   // Bugün başlatılan sohbet sayısı
+  dailyChatsResetAt      DateTime      @default(now()) // Günlük sıfırlama tarihi
+  status                 UserStatus    @default(ACTIVE)
+  reportCount            Int           @default(0)
+  isOnline               Boolean       @default(false)
+  lastSeenAt             DateTime?
+  expoPushToken          String?
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+
+  // Relations
+  matchesAsUser1         Match[]       @relation("User1Matches")
+  matchesAsUser2         Match[]       @relation("User2Matches")
+  matchHistoriesAsUser1  MatchHistory[] @relation("User1MatchHistories")
+  matchHistoriesAsUser2  MatchHistory[] @relation("User2MatchHistories")
+  messages               Message[]     @relation("UserMessages")
+  blocksInitiated        Block[]       @relation("BlocksInitiated")
+  blocksReceived         Block[]       @relation("BlocksReceived")
+  reportsMade            Report[]      @relation("ReportsMade")
+  reportsReceived        Report[]      @relation("ReportsReceived")
+  giftsSent              Gift[]        @relation("GiftsSent")
+  giftsReceived          Gift[]        @relation("GiftsReceived")
+  friendRequestsSent     FriendRequest[] @relation("FriendRequestsSent")
+  friendRequestsReceived FriendRequest[] @relation("FriendRequestsReceived")
+  friendshipsAsUser1     Friendship[]  @relation("FriendshipUser1")
+  friendshipsAsUser2     Friendship[]  @relation("FriendshipUser2")
+  verificationVideo       VerificationVideo[]
+  friendChatMessagesSent FriendChatMessage[] @relation("SentMessages")
+  plusSubscriptions      PlusSubscription[]
+  tokenPurchases         TokenPurchase[]
+  redeemRequests         RedeemRequest[]
+  rewardClaims           RewardClaim[]
+}
+
+model Photo {
+  id        String  @id @default(uuid())
+  userId    String
+  url       String
+  order     Int
+  approved  Boolean @default(false)
+  createdAt DateTime @default(now())
+
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationVideo {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  url       String
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Card {
+  id          String       @id @default(uuid())
+  questionTR  String
+  category    CardCategory
+  optionsJson String       // JSON stringified array of 4 options
+  createdAt   DateTime     @default(now())
+}
+
+model Match {
+  id           String      @id @default(uuid())
+  user1Id      String
+  user2Id      String
+  createdAt    DateTime    @default(now())
+  chatUnlocked Boolean     @default(false)
+  endedAt      DateTime?
+  endReason    ChatEndReason?
+
+  user1        User        @relation("User1Matches", fields: [user1Id], references: [id], onDelete: Cascade)
+  user2        User        @relation("User2Matches", fields: [user2Id], references: [id], onDelete: Cascade)
+  chatSessions ChatSession[]
+
+  @@index([user1Id])
+  @@index([user2Id])
+}
+
+model MatchHistory {
+  id          String      @id @default(uuid())
+  user1Id     String
+  user2Id     String
+  matchedAt   DateTime    @default(now())
+  chatUnlocked Boolean    @default(false)
+  endedAt     DateTime?
+  endReason   ChatEndReason?
+
+  user1       User        @relation("User1MatchHistories", fields: [user1Id], references: [id], onDelete: Cascade)
+  user2       User        @relation("User2MatchHistories", fields: [user2Id], references: [id], onDelete: Cascade)
+
+  @@index([user1Id])
+  @@index([user2Id])
+  @@index([matchedAt])
+}
+
+model ChatSession {
+  id                 String      @id @default(uuid())
+  matchId            String
+  startedAt          DateTime    @default(now())
+  currentStage       Int         @default(1)
+  stageStartedAt     DateTime    @default(now())
+  user1Id            String
+  user2Id            String
+  user1MessageCount  Int         @default(0)
+  user2MessageCount  Int         @default(0)
+  endedAt            DateTime?
+  endReason          ChatEndReason?
+  
+  // Ücretsiz medya hakları (her kullanıcı için ilk medya ücretsiz)
+  user1FreeVoiceUsed  Boolean    @default(false)
+  user1FreePhotoUsed  Boolean    @default(false)
+  user1FreeVideoUsed  Boolean    @default(false)
+  user2FreeVoiceUsed  Boolean    @default(false)
+  user2FreePhotoUsed  Boolean    @default(false)
+  user2FreeVideoUsed  Boolean    @default(false)
+
+  match              Match       @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  messages           Message[]
+
+  @@index([matchId])
+}
+
+model Message {
+  id            String      @id @default(uuid())
+  chatSessionId String
+  senderId      String
+  content       String?
+  mediaUrl      String?
+  mediaType     String?     // 'photo' | 'video' | 'voice'
+  messageType   MessageType @default(TEXT)  // TEXT, MEDIA, TOKEN_GIFT, SYSTEM
+  tokenAmount   Int?        // TOKEN_GIFT için hediye edilen miktar
+  viewTokenCost Int?        // Görüntüleme maliyeti (fotoğraf: 5, video: 10)
+  viewedBy      String?     // Görüntüleyen kullanıcı ID
+  viewedAt      DateTime?   // Görüntülenme zamanı
+  wasFreeView   Boolean     @default(false) // Ücretsiz hak kullanıldı mı
+  createdAt     DateTime    @default(now())
+
+  chatSession   ChatSession @relation(fields: [chatSessionId], references: [id], onDelete: Cascade)
+  sender        User        @relation("UserMessages", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([chatSessionId])
+  @@index([senderId])
+}
+
+model Block {
+  id             String   @id @default(uuid())
+  blockerUserId  String
+  blockedUserId  String
+  reason         String?
+  createdAt      DateTime @default(now())
+
+  blocker        User     @relation("BlocksInitiated", fields: [blockerUserId], references: [id], onDelete: Cascade)
+  blocked        User     @relation("BlocksReceived", fields: [blockedUserId], references: [id], onDelete: Cascade)
+
+  @@index([blockerUserId])
+  @@index([blockedUserId])
+  @@unique([blockerUserId, blockedUserId])
+}
+
+model Report {
+  id              String         @id @default(uuid())
+  reporterUserId  String
+  reportedUserId  String
+  sessionId       String?
+  category        ReportCategory
+  description     String?
+  screenshot      String?
+  status          ReportStatus   @default(PENDING)
+  adminNote       String?
+  createdAt       DateTime       @default(now())
+
+  reporter        User           @relation("ReportsMade", fields: [reporterUserId], references: [id], onDelete: Cascade)
+  reported        User           @relation("ReportsReceived", fields: [reportedUserId], references: [id], onDelete: Cascade)
+
+  @@index([reporterUserId])
+  @@index([reportedUserId])
+}
+
+model Gift {
+  id          String   @id @default(uuid())
+  fromUserId  String
+  toUserId    String
+  sessionId   String?
+  amount      Int
+  message     String?  @db.VarChar(100)
+  createdAt   DateTime @default(now())
+
+  fromUser    User     @relation("GiftsSent", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser      User     @relation("GiftsReceived", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@index([fromUserId])
+  @@index([toUserId])
+}
+
+model FriendRequest {
+  id          String   @id @default(uuid())
+  fromUserId  String
+  toUserId    String
+  sessionId   String?
+  status      String   @default("PENDING") // PENDING, ACCEPTED, REJECTED
+  createdAt   DateTime @default(now())
+  respondedAt DateTime?
+
+  fromUser    User     @relation("FriendRequestsSent", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser      User     @relation("FriendRequestsReceived", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@index([fromUserId])
+  @@index([toUserId])
+}
+
+model Friendship {
+  id        String   @id @default(uuid())
+  user1Id   String
+  user2Id   String
+  createdAt DateTime @default(now())
+
+  user1     User     @relation("FriendshipUser1", fields: [user1Id], references: [id], onDelete: Cascade)
+  user2     User     @relation("FriendshipUser2", fields: [user2Id], references: [id], onDelete: Cascade)
+  friendChats FriendChat[]
+
+  @@unique([user1Id, user2Id])
+  @@index([user1Id])
+  @@index([user2Id])
+}
+
+model FriendChat {
+  id            String      @id @default(uuid())
+  friendshipId  String
+  createdAt     DateTime    @default(now())
+
+  friendship    Friendship  @relation(fields: [friendshipId], references: [id], onDelete: Cascade)
+  messages      FriendChatMessage[]
+
+  @@index([friendshipId])
+}
+
+model FriendChatMessage {
+  id           String      @id @default(uuid())
+  friendChatId String
+  senderId     String
+  content      String?
+  mediaUrl     String?
+  mediaType    String?
+  readAt       DateTime?   // Mesaj okunduğunda set edilir
+  createdAt    DateTime    @default(now())
+
+  friendChat   FriendChat  @relation(fields: [friendChatId], references: [id], onDelete: Cascade)
+  sender       User        @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([friendChatId])
+  @@index([senderId])
+}
+
+model PlusSubscription {
+  id                     String    @id @default(uuid())
+  userId                 String
+  productId              String
+  platform               Platform
+  originalTransactionId  String
+  expiresAt              DateTime
+  autoRenew              Boolean   @default(true)
+  createdAt              DateTime  @default(now())
+
+  user                   User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model TokenPurchase {
+  id            String    @id @default(uuid())
+  userId        String
+  productId     String
+  platform      Platform
+  receipt       String
+  tokensGranted Int
+  createdAt     DateTime  @default(now())
+
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model RedeemRequest {
+  id              String       @id @default(uuid())
+  userId          String
+  requestedAmount Int
+  bankAccount     String
+  status          RedeemStatus @default(PENDING)
+  adminNote       String?
+  createdAt       DateTime     @default(now())
+  processedAt     DateTime?
+
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Admin {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String
+  role         AdminRole @default(MODERATOR)
+  createdAt    DateTime  @default(now())
+}
+
+model RewardClaim {
+  id          String   @id @default(uuid())
+  userId      String
+  month       DateTime // Ödül ayı
+  rank        Int      // Sıralama (1, 2, 3)
+  contactInfo String   // IBAN veya iletişim bilgisi
+  status      String   @default("PENDING") // PENDING, APPROVED, REJECTED, PAID
+  adminNote   String?
+  createdAt   DateTime @default(now())
+  processedAt DateTime?
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([month])
+}
+
