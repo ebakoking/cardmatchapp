@@ -456,7 +456,7 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
           <Text style={styles.stepEmoji}>🎂</Text>
           <Text style={styles.stepTitle}>Doğum Tarihin</Text>
           <Text style={styles.stepSubtitle}>
-            Eşleşme için yaşını hesaplamamız gerekiyor.
+            Daha uyumlu eşleşmeler için yaşını hesaplıyoruz.
           </Text>
 
           <View style={styles.birthDateRow}>
@@ -738,6 +738,24 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
               {nickname.length > 0 && (
                 <Text style={styles.ctaMicroCopy}>
                   Bu isim sohbetlerde görünecek
+                </Text>
+              )}
+            </>
+          )}
+          
+          {/* Step 2 için micro-copy */}
+          {currentStep === 2 && (
+            <>
+              {/* Tarih eksik */}
+              {(birthDay.length < 2 || birthMonth.length < 2 || birthYear.length < 4) && (
+                <Text style={styles.ctaHelperText}>
+                  Doğum tarihini tamamla
+                </Text>
+              )}
+              {/* Yaş uygun değil */}
+              {calculatedAge !== null && calculatedAge < 18 && (
+                <Text style={styles.ctaHelperText}>
+                  18 yaşından büyük olmalısın
                 </Text>
               )}
             </>
