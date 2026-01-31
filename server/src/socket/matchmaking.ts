@@ -450,49 +450,62 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
     },
   );
 
-  // Kuyruktan çık (kullanıcı iptal etti)
-  socket.on('match:leave', (payload: { userId: string; matchId?: string }) => {
-    const { userId, matchId } = payload;
-    console.log('[Matchmaking] match:leave received:', { userId, matchId, socketId: socket.id });
+  // Kuyruktan/oyundan çık (kullanıcı iptal etti veya ekrandan ayrıldı)
+  socket.on('match:leave', (payload: { matchId?: string; userId?: string }) => {
+    // Authoritative userId - socket.data'dan al
+    const leavingUserId = socket.data?.userId || payload.userId;
+    const { matchId } = payload;
+    
+    console.log('[Matchmaking] ========== MATCH LEAVE ==========');
+    console.log('[Matchmaking] leavingUserId:', leavingUserId);
+    console.log('[Matchmaking] matchId:', matchId);
+    console.log('[Matchmaking] socket.data.userId:', socket.data?.userId);
+    console.log('[Matchmaking] socketId:', socket.id);
+    
+    if (!leavingUserId) {
+      console.log('[Matchmaking] WARNING: No userId available for match:leave');
+      return;
+    }
     
     // 1. Kuyruktan çıkar
-    const idx = matchmakingQueue.findIndex((q) => q.userId === userId);
+    const idx = matchmakingQueue.findIndex((q) => q.userId === leavingUserId);
     if (idx >= 0) {
       matchmakingQueue.splice(idx, 1);
-      console.log('[Matchmaking] User removed from queue:', { userId, newQueueSize: matchmakingQueue.length });
+      console.log('[Matchmaking] User removed from queue:', { leavingUserId, newQueueSize: matchmakingQueue.length });
     }
     
     // 2. Aktif kart oyununda mı kontrol et
-    for (const [gameMatchId, game] of cardGames.entries()) {
-      if (matchId && gameMatchId !== matchId) continue;
-      
-      let isInGame = false;
+    // matchId verilmişse sadece o oyunu kontrol et, yoksa tüm oyunları tara
+    const targetGame = matchId ? cardGames.get(matchId) : null;
+    
+    if (targetGame) {
+      // Direkt matchId ile oyunu bulduk
       let peerId: string | null = null;
       
-      if (game.user1Id === userId) {
-        isInGame = true;
-        peerId = game.user2Id;
-      } else if (game.user2Id === userId) {
-        isInGame = true;
-        peerId = game.user1Id;
+      if (targetGame.user1Id === leavingUserId) {
+        peerId = targetGame.user2Id;
+      } else if (targetGame.user2Id === leavingUserId) {
+        peerId = targetGame.user1Id;
       }
       
-      if (isInGame && peerId) {
-        console.log('[Matchmaking] User left during card game:', { gameMatchId, userId, peerId });
+      if (peerId) {
+        console.log('[Matchmaking] User left card game:', { matchId, leavingUserId, peerId });
         
         // Peer'a bildir
         io.to(peerId).emit('match:ended', {
-          matchId: gameMatchId,
+          matchId,
           reason: 'peer_left',
           message: 'Karşı taraf ayrıldı.',
         });
+        console.log('[Matchmaking] match:ended emitted to peer:', peerId);
         
         // Oyunu temizle
-        cardGames.delete(gameMatchId);
+        cardGames.delete(matchId);
+        console.log('[Matchmaking] Game deleted:', matchId);
         
         // Match'i DB'de sonlandır
         prisma.match.update({
-          where: { id: gameMatchId },
+          where: { id: matchId },
           data: { 
             endedAt: new Date(),
             endReason: 'USER_ENDED',
@@ -500,13 +513,50 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
         }).catch(err => {
           console.error('[Matchmaking] Failed to update match end status:', err);
         });
+      }
+    } else {
+      // matchId verilmediyse veya bulunamadıysa, tüm oyunları tara
+      for (const [gameMatchId, game] of cardGames.entries()) {
+        let peerId: string | null = null;
         
-        break;
+        if (game.user1Id === leavingUserId) {
+          peerId = game.user2Id;
+        } else if (game.user2Id === leavingUserId) {
+          peerId = game.user1Id;
+        }
+        
+        if (peerId) {
+          console.log('[Matchmaking] User left card game (scan):', { gameMatchId, leavingUserId, peerId });
+          
+          // Peer'a bildir
+          io.to(peerId).emit('match:ended', {
+            matchId: gameMatchId,
+            reason: 'peer_left',
+            message: 'Karşı taraf ayrıldı.',
+          });
+          console.log('[Matchmaking] match:ended emitted to peer:', peerId);
+          
+          // Oyunu temizle
+          cardGames.delete(gameMatchId);
+          
+          // Match'i DB'de sonlandır
+          prisma.match.update({
+            where: { id: gameMatchId },
+            data: { 
+              endedAt: new Date(),
+              endReason: 'USER_ENDED',
+            },
+          }).catch(err => {
+            console.error('[Matchmaking] Failed to update match end status:', err);
+          });
+          
+          break;
+        }
       }
     }
     
     // Odadan da çık
-    socket.leave(userId);
+    socket.leave(leavingUserId);
   });
 
   socket.on('disconnect', () => {

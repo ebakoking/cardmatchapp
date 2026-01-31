@@ -44,6 +44,10 @@ const CardGateScreen: React.FC<Props> = ({ route, navigation }) => {
   
   // Ref to track if cards received (for timeout callbacks)
   const cardsReceivedRef = useRef(false);
+  
+  // Track if match ended or we moved to chat (to avoid double match:leave)
+  const matchEndedRef = useRef(false);
+  const movedToChatRef = useRef(false);
 
   // Request cards function
   const requestCards = useCallback(() => {
@@ -115,6 +119,7 @@ const CardGateScreen: React.FC<Props> = ({ route, navigation }) => {
       partnerNickname: string;
     }) => {
       console.log('[CardGate] chat:unlocked received:', payload);
+      movedToChatRef.current = true; // Mark that we're moving to chat
       navigation.replace('Chat', {
         sessionId: payload.sessionId,
         partnerId: payload.partnerId,
@@ -125,6 +130,7 @@ const CardGateScreen: React.FC<Props> = ({ route, navigation }) => {
     // match:ended - eşleşme sona erdi
     const handleMatchEnded = (payload: MatchEndedPayload) => {
       console.log('[CardGate] match:ended received:', payload);
+      matchEndedRef.current = true; // Mark that match has ended
       
       const reasonText = payload.reason === 'peer_disconnected' 
         ? 'Karşı taraf bağlantısını kaybetti.'
@@ -200,6 +206,17 @@ const CardGateScreen: React.FC<Props> = ({ route, navigation }) => {
         socket.off('cards:error', handleCardsError);
         socket.off('chat:unlocked', handleChatUnlocked);
         socket.off('match:ended', handleMatchEnded);
+        
+        // Emit match:leave if we're leaving the screen without match ending or moving to chat
+        if (!matchEndedRef.current && !movedToChatRef.current) {
+          console.log('[CardGate] Unmounting, emitting match:leave:', { matchId });
+          socket.emit('match:leave', { matchId });
+        } else {
+          console.log('[CardGate] Unmounting, NOT emitting match:leave:', {
+            matchEnded: matchEndedRef.current,
+            movedToChat: movedToChatRef.current,
+          });
+        }
       };
     }
 
@@ -208,6 +225,12 @@ const CardGateScreen: React.FC<Props> = ({ route, navigation }) => {
       socket.off('cards:error', handleCardsError);
       socket.off('chat:unlocked', handleChatUnlocked);
       socket.off('match:ended', handleMatchEnded);
+      
+      // Emit match:leave if we're leaving the screen without match ending or moving to chat
+      if (!matchEndedRef.current && !movedToChatRef.current) {
+        console.log('[CardGate] Unmounting (no user), emitting match:leave:', { matchId });
+        socket.emit('match:leave', { matchId });
+      }
     };
   }, [matchId, navigation, user, requestCards]);
 
