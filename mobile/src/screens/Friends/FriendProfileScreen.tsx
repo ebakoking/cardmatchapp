@@ -31,6 +31,7 @@ interface ProfilePhoto {
   url: string;
   order: number;
   caption?: string;
+  hasCaption?: boolean;
   isUnlocked: boolean;
 }
 
@@ -274,6 +275,7 @@ const FriendProfileScreen: React.FC<Props> = ({ route, navigation }) => {
                   photoId={photo.id}
                   photoUrl={photo.url}
                   caption={photo.caption}
+                  hasCaption={photo.hasCaption}
                   isUnlocked={photo.isUnlocked}
                   unlockCost={PHOTO_UNLOCK_COST}
                   userBalance={userBalance}

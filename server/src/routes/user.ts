@@ -196,18 +196,60 @@ router.post(
     // For MVP, we store a local path; S3 integration can reuse verification service as needed.
     const key = `profile-photos/${userId}-${Date.now()}.jpg`;
     const url = `/uploads/${key}`;
+    
+    // Caption from form data (optional, max 80 chars)
+    const caption = req.body.caption?.slice(0, 80) || null;
 
     const photo = await prisma.photo.create({
       data: {
         userId,
         url,
         order: count + 1,
+        caption,
       },
     });
 
     return res.json({ success: true, data: photo });
   },
 );
+
+// ============ FOTOĞRAF CAPTION GÜNCELLEME ============
+router.patch('/me/photos/:photoId/caption', authMiddleware, async (req: any, res) => {
+  const userId = req.user.userId;
+  const { photoId } = req.params;
+  const { caption } = req.body;
+  
+  // Validate caption length
+  if (caption && caption.length > 80) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'CAPTION_TOO_LONG', message: 'Açıklama en fazla 80 karakter olabilir.' },
+    });
+  }
+  
+  // Check photo ownership
+  const photo = await prisma.photo.findFirst({
+    where: { id: photoId, userId },
+  });
+  
+  if (!photo) {
+    return res.status(404).json({
+      success: false,
+      error: { code: 'NOT_FOUND', message: 'Fotoğraf bulunamadı.' },
+    });
+  }
+  
+  // Update caption
+  const updatedPhoto = await prisma.photo.update({
+    where: { id: photoId },
+    data: { caption: caption || null },
+  });
+  
+  return res.json({
+    success: true,
+    data: updatedPhoto,
+  });
+});
 
 // Verification video upload
 router.post(
@@ -782,6 +824,7 @@ router.get('/friends/:friendId/profile', authMiddleware, async (req: any, res) =
   const unlockedPhotoIds = new Set(unlockedPhotos.map((u) => u.photoId));
 
   // Arkadaş olduğu için detayları göster
+  // Caption sadece fotoğraf açılmışsa gösterilir
   return res.json({
     success: true,
     data: {
@@ -793,13 +836,19 @@ router.get('/friends/:friendId/profile', authMiddleware, async (req: any, res) =
       isOnline: friend.isOnline,
       verified: friend.verified,
       lastSeenAt: friend.lastSeenAt,
-      profilePhotos: friend.profilePhotos.map((p) => ({
-        id: p.id,
-        url: p.url,
-        order: p.order,
-        caption: p.caption,
-        isUnlocked: unlockedPhotoIds.has(p.id),
-      })),
+      isFriend: true, // Arkadaşlık durumu
+      profilePhotos: friend.profilePhotos.map((p) => {
+        const isUnlocked = unlockedPhotoIds.has(p.id);
+        return {
+          id: p.id,
+          url: p.url,
+          order: p.order,
+          // Caption sadece unlock edilmişse görünür
+          caption: isUnlocked ? p.caption : null,
+          hasCaption: !!p.caption, // Kullanıcı caption olduğunu bilsin ama içeriği görmez
+          isUnlocked,
+        };
+      }),
       friendshipId: friendship.id,
       friendsSince: friendship.createdAt,
       // Spark bilgileri

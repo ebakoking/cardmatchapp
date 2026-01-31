@@ -5,11 +5,15 @@ import {
   TouchableOpacity,
   Image,
   StyleSheet,
-  FlatList,
+  Modal,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { Ionicons } from '@expo/vector-icons';
 import { AuthStackParamList } from '../../navigation';
 import { COLORS } from '../../theme/colors';
 import { FONTS } from '../../theme/fonts';
@@ -21,11 +25,15 @@ type Props = NativeStackScreenProps<AuthStackParamList, 'PhotoUpload'>;
 interface LocalPhoto {
   id: string;
   uri: string;
+  caption?: string;
 }
 
 const PhotoUploadScreen: React.FC<Props> = ({ navigation }) => {
   const [photos, setPhotos] = useState<LocalPhoto[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [captionModalVisible, setCaptionModalVisible] = useState(false);
+  const [selectedPhotoId, setSelectedPhotoId] = useState<string | null>(null);
+  const [captionText, setCaptionText] = useState('');
 
   const pickPhoto = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -35,12 +43,31 @@ const PhotoUploadScreen: React.FC<Props> = ({ navigation }) => {
     if (!result.canceled) {
       const uri = result.assets[0].uri;
       if (photos.length >= 6) return;
-      setPhotos((prev) => [...prev, { id: `${Date.now()}`, uri }]);
+      setPhotos((prev) => [...prev, { id: `${Date.now()}`, uri, caption: '' }]);
     }
   };
 
   const removePhoto = (id: string) => {
     setPhotos((prev) => prev.filter((p) => p.id !== id));
+  };
+
+  const openCaptionModal = (photo: LocalPhoto) => {
+    setSelectedPhotoId(photo.id);
+    setCaptionText(photo.caption || '');
+    setCaptionModalVisible(true);
+  };
+
+  const saveCaption = () => {
+    if (selectedPhotoId) {
+      setPhotos((prev) =>
+        prev.map((p) =>
+          p.id === selectedPhotoId ? { ...p, caption: captionText.trim() } : p
+        )
+      );
+    }
+    setCaptionModalVisible(false);
+    setSelectedPhotoId(null);
+    setCaptionText('');
   };
 
   const uploadAll = async () => {
@@ -60,6 +87,10 @@ const PhotoUploadScreen: React.FC<Props> = ({ navigation }) => {
           name: 'photo.jpg',
           type: 'image/jpeg',
         });
+        // Caption varsa ekle
+        if (p.caption) {
+          form.append('caption', p.caption);
+        }
         await api.post('/api/user/me/photos', form, {
           headers: { 'Content-Type': 'multipart/form-data' },
         });
@@ -90,25 +121,48 @@ const PhotoUploadScreen: React.FC<Props> = ({ navigation }) => {
         {[0, 1, 2, 3, 4, 5].map((index) => {
           const photo = photos[index];
           return (
-            <TouchableOpacity
-              key={index}
-              style={styles.photoSlot}
-              onPress={photo ? () => removePhoto(photo.id) : pickPhoto}
-            >
-              {photo ? (
-                <>
-                  <Image source={{ uri: photo.uri }} style={styles.photo} />
-                  <View style={styles.removeButton}>
-                    <Text style={styles.removeButtonText}>✕</Text>
+            <View key={index} style={styles.photoSlotContainer}>
+              <TouchableOpacity
+                style={styles.photoSlot}
+                onPress={photo ? () => removePhoto(photo.id) : pickPhoto}
+              >
+                {photo ? (
+                  <>
+                    <Image source={{ uri: photo.uri }} style={styles.photo} />
+                    <View style={styles.removeButton}>
+                      <Text style={styles.removeButtonText}>✕</Text>
+                    </View>
+                    {/* Caption indicator */}
+                    {photo.caption ? (
+                      <View style={styles.captionBadge}>
+                        <Ionicons name="chatbubble" size={10} color={COLORS.text} />
+                      </View>
+                    ) : null}
+                  </>
+                ) : (
+                  <View style={styles.addSlot}>
+                    <Text style={styles.addIcon}>+</Text>
+                    {index === 0 && <Text style={styles.addText}>Ekle</Text>}
                   </View>
-                </>
-              ) : (
-                <View style={styles.addSlot}>
-                  <Text style={styles.addIcon}>+</Text>
-                  {index === 0 && <Text style={styles.addText}>Ekle</Text>}
-                </View>
+                )}
+              </TouchableOpacity>
+              {/* Caption button - sadece fotoğraf varsa */}
+              {photo && (
+                <TouchableOpacity
+                  style={styles.captionButton}
+                  onPress={() => openCaptionModal(photo)}
+                >
+                  <Ionicons 
+                    name={photo.caption ? 'create' : 'add-circle-outline'} 
+                    size={14} 
+                    color={COLORS.accent} 
+                  />
+                  <Text style={styles.captionButtonText}>
+                    {photo.caption ? 'Düzenle' : 'Açıklama'}
+                  </Text>
+                </TouchableOpacity>
               )}
-            </TouchableOpacity>
+            </View>
           );
         })}
       </View>
@@ -137,6 +191,62 @@ const PhotoUploadScreen: React.FC<Props> = ({ navigation }) => {
           </TouchableOpacity>
         )}
       </View>
+
+      {/* Caption Modal */}
+      <Modal
+        visible={captionModalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setCaptionModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Fotoğraf Açıklaması</Text>
+              <TouchableOpacity onPress={() => setCaptionModalVisible(false)}>
+                <Ionicons name="close" size={24} color={COLORS.textMuted} />
+              </TouchableOpacity>
+            </View>
+            
+            <Text style={styles.modalHint}>
+              Fotoğrafın hakkında kısa bir açıklama yaz (opsiyonel)
+            </Text>
+            
+            <TextInput
+              style={styles.captionInput}
+              value={captionText}
+              onChangeText={(text) => text.length <= 80 && setCaptionText(text)}
+              placeholder="Örn: Tatilde çekildi 🌴"
+              placeholderTextColor={COLORS.textMuted}
+              multiline
+              maxLength={80}
+              autoFocus
+            />
+            
+            <Text style={styles.charCount}>
+              {captionText.length}/80
+            </Text>
+            
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalCancelButton}
+                onPress={() => setCaptionModalVisible(false)}
+              >
+                <Text style={styles.modalCancelText}>İptal</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.modalSaveButton}
+                onPress={saveCaption}
+              >
+                <Text style={styles.modalSaveText}>Kaydet</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -172,6 +282,9 @@ const styles = StyleSheet.create({
     gap: SPACING.sm,
     marginBottom: SPACING.xl,
   },
+  photoSlotContainer: {
+    alignItems: 'center',
+  },
   photoSlot: {
     width: 100,
     height: 130,
@@ -197,6 +310,27 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 12,
     fontWeight: 'bold',
+  },
+  captionBadge: {
+    position: 'absolute',
+    bottom: 4,
+    right: 4,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: COLORS.accent,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  captionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+    gap: 2,
+  },
+  captionButtonText: {
+    fontSize: 11,
+    color: COLORS.accent,
   },
   addSlot: {
     width: '100%',
@@ -257,6 +391,76 @@ const styles = StyleSheet.create({
   skipText: {
     ...FONTS.body,
     color: COLORS.textMuted,
+  },
+  // Modal styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: COLORS.surface,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: SPACING.xl,
+    paddingBottom: SPACING.xxl,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: SPACING.md,
+  },
+  modalTitle: {
+    ...FONTS.h3,
+    color: COLORS.text,
+  },
+  modalHint: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+    marginBottom: SPACING.md,
+  },
+  captionInput: {
+    backgroundColor: COLORS.background,
+    borderRadius: 12,
+    padding: SPACING.md,
+    color: COLORS.text,
+    minHeight: 80,
+    textAlignVertical: 'top',
+    fontSize: 15,
+  },
+  charCount: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+    textAlign: 'right',
+    marginTop: SPACING.xs,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: SPACING.md,
+    marginTop: SPACING.lg,
+  },
+  modalCancelButton: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+    borderRadius: 12,
+    paddingVertical: SPACING.md,
+    alignItems: 'center',
+  },
+  modalCancelText: {
+    ...FONTS.button,
+    color: COLORS.textMuted,
+  },
+  modalSaveButton: {
+    flex: 1,
+    backgroundColor: COLORS.primary,
+    borderRadius: 12,
+    paddingVertical: SPACING.md,
+    alignItems: 'center',
+  },
+  modalSaveText: {
+    ...FONTS.button,
+    color: COLORS.text,
   },
 });
 

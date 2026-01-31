@@ -35,6 +35,7 @@ interface BlurredPhotoProps {
   photoId: string;
   photoUrl: string;
   caption?: string;
+  hasCaption?: boolean; // Server tells us if there's a caption without revealing content
   isUnlocked: boolean;
   unlockCost: number;
   userBalance: number;
@@ -47,6 +48,7 @@ const BlurredPhoto: React.FC<BlurredPhotoProps> = ({
   photoId,
   photoUrl,
   caption,
+  hasCaption,
   isUnlocked,
   unlockCost,
   userBalance,
@@ -57,6 +59,7 @@ const BlurredPhoto: React.FC<BlurredPhotoProps> = ({
   const [unlocking, setUnlocking] = useState(false);
   const [showUnlockModal, setShowUnlockModal] = useState(false);
   const [localUnlocked, setLocalUnlocked] = useState(isUnlocked);
+  const [localCaption, setLocalCaption] = useState(caption);
 
   const handlePress = () => {
     if (localUnlocked) {
@@ -85,12 +88,26 @@ const BlurredPhoto: React.FC<BlurredPhotoProps> = ({
       const success = await onUnlock(photoId);
       if (success) {
         setLocalUnlocked(true);
+        // Caption will be updated via parent component's state update
       }
     } finally {
       setUnlocking(false);
       setShowUnlockModal(false);
     }
   };
+
+  // Sync with prop changes (when parent updates caption after unlock)
+  React.useEffect(() => {
+    if (caption !== localCaption) {
+      setLocalCaption(caption);
+    }
+  }, [caption]);
+
+  React.useEffect(() => {
+    if (isUnlocked !== localUnlocked) {
+      setLocalUnlocked(isUnlocked);
+    }
+  }, [isUnlocked]);
 
   return (
     <>
@@ -115,6 +132,13 @@ const BlurredPhoto: React.FC<BlurredPhotoProps> = ({
                   <Text style={styles.costText}>{unlockCost}</Text>
                 </View>
                 <Text style={styles.tapToUnlock}>Açmak için dokun</Text>
+                {/* Caption indicator when locked */}
+                {hasCaption && (
+                  <View style={styles.lockedCaptionHint}>
+                    <Ionicons name="chatbubble-ellipses" size={12} color={COLORS.textMuted} />
+                    <Text style={styles.lockedCaptionText}>Açıklama var</Text>
+                  </View>
+                )}
               </View>
             </BlurView>
           ) : (
@@ -128,16 +152,23 @@ const BlurredPhoto: React.FC<BlurredPhotoProps> = ({
                   <Text style={styles.costText}>{unlockCost}</Text>
                 </View>
                 <Text style={styles.tapToUnlock}>Açmak için dokun</Text>
+                {/* Caption indicator when locked */}
+                {hasCaption && (
+                  <View style={styles.lockedCaptionHint}>
+                    <Ionicons name="chatbubble-ellipses" size={12} color={COLORS.textMuted} />
+                    <Text style={styles.lockedCaptionText}>Açıklama var</Text>
+                  </View>
+                )}
               </View>
             </FallbackBlurOverlay>
           )
         )}
 
         {/* Caption (sadece açık fotoğraflarda) */}
-        {localUnlocked && caption && (
+        {localUnlocked && localCaption && (
           <View style={styles.captionContainer}>
             <Text style={styles.captionText} numberOfLines={2}>
-              {caption}
+              {localCaption}
             </Text>
           </View>
         )}
@@ -275,6 +306,17 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     fontSize: 12,
     marginTop: SPACING.xs,
+  },
+  lockedCaptionHint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: SPACING.sm,
+    gap: 4,
+    opacity: 0.7,
+  },
+  lockedCaptionText: {
+    color: COLORS.textMuted,
+    fontSize: 11,
   },
   captionContainer: {
     position: 'absolute',

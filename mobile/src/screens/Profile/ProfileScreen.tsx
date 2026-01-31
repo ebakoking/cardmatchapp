@@ -130,7 +130,16 @@ const ProfileScreen: React.FC<Props> = ({ navigation }) => {
         columnWrapperStyle={{ gap: SPACING.sm }}
         keyExtractor={(item) => item.id}
         renderItem={({ item }) => (
-          <Image source={{ uri: item.url }} style={styles.photo} />
+          <View style={styles.photoContainer}>
+            <Image source={{ uri: item.url }} style={styles.photo} />
+            {item.caption ? (
+              <View style={styles.captionOverlay}>
+                <Text style={styles.captionText} numberOfLines={1}>
+                  {item.caption}
+                </Text>
+              </View>
+            ) : null}
+          </View>
         )}
       />
 
@@ -282,10 +291,29 @@ const styles = StyleSheet.create({
   photoGrid: {
     marginTop: SPACING.lg,
   },
+  photoContainer: {
+    position: 'relative',
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
   photo: {
     width: 100,
     height: 130,
     borderRadius: 12,
+  },
+  captionOverlay: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingHorizontal: SPACING.xs,
+    paddingVertical: 2,
+  },
+  captionText: {
+    color: COLORS.text,
+    fontSize: 10,
+    textAlign: 'center',
   },
   actions: {
     marginTop: SPACING.xl,
