@@ -25,14 +25,14 @@ const TokenPurchaseScreen: React.FC = () => {
   return (
     <View style={styles.container}>
       <View style={styles.card}>
-        <Text style={FONTS.h2}>100 Jeton</Text>
+        <Text style={FONTS.h2}>100 Elmas</Text>
         <Text style={[FONTS.h3, { marginTop: SPACING.sm }]}>
           129.90 TL
         </Text>
 
         <View style={styles.benefits}>
-          <Text style={FONTS.body}>📸 Ekstra fotoğraf gönder (5 jeton)</Text>
-          <Text style={FONTS.body}>🎥 Ekstra video gönder (10 jeton)</Text>
+          <Text style={FONTS.body}>📸 Ekstra fotoğraf gönder (5 elmas)</Text>
+          <Text style={FONTS.body}>🎥 Ekstra video gönder (10 elmas)</Text>
           <Text style={FONTS.body}>🎁 Arkadaşlarına hediye et</Text>
         </View>
 

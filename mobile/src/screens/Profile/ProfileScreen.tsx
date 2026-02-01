@@ -4,14 +4,19 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  FlatList,
   Image,
   Modal,
   TextInput,
+  ScrollView,
+  Alert,
+  ActivityIndicator,
+  Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { ProfileStackParamList } from '../../navigation';
 import { COLORS } from '../../theme/colors';
 import { FONTS } from '../../theme/fonts';
@@ -19,6 +24,13 @@ import { SPACING } from '../../theme/spacing';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import ProfilePhoto from '../../components/ProfilePhoto';
+import { getPhotoUrl } from '../../utils/photoUrl';
+
+// Constants
+const MAX_CORE_PHOTOS = 6;
+const MAX_DAILY_PHOTOS = 3;
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const PHOTO_SIZE = (SCREEN_WIDTH - SPACING.xl * 2 - SPACING.sm * 2) / 3;
 
 // Avatar listesi
 const AVATARS = [
@@ -34,138 +46,481 @@ const AVATARS = [
 
 type Props = NativeStackScreenProps<ProfileStackParamList, 'ProfileMain'>;
 
+interface Photo {
+  id: string;
+  url: string;
+  caption?: string;
+  type: 'CORE' | 'DAILY';
+  order: number;
+}
+
+type TabType = 'core' | 'daily';
+
 const ProfileScreen: React.FC<Props> = ({ navigation }) => {
-  const { user, logout, refreshProfile } = useAuth();
-  const [editModalVisible, setEditModalVisible] = useState(false);
-  const [bio, setBio] = useState(user?.bio ?? '');
+  // 🔴🔴🔴 DEBUG V6 - BU LOGU GÖRÜYORSAN YENİ KOD YÜKLENDİ 🔴🔴🔴
+  console.log('🔴🔴🔴 PROFILE SCREEN V6 - RENDER 🔴🔴🔴');
   
-  // Kullanıcının avatar'ını bul
+  const { user, logout, refreshProfile } = useAuth();
+  const [activeTab, setActiveTab] = useState<TabType>('core');
+  const [bioModalVisible, setBioModalVisible] = useState(false);
+  const [captionModalVisible, setCaptionModalVisible] = useState(false);
+  const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
+  const [bio, setBio] = useState(user?.bio ?? '');
+  const [captionText, setCaptionText] = useState('');
+  const [uploading, setUploading] = useState(false);
+  
+  // Local photo cache - fotoğrafların kaybolmasını önler
+  const [cachedPhotos, setCachedPhotos] = useState<Photo[]>([]);
+  
   const currentAvatar = AVATARS.find(a => a.id === (user?.avatarId || 1)) || AVATARS[0];
 
-  // Ekran focus olduğunda profili yenile (spark güncellemesi için)
-  useFocusEffect(
-    useCallback(() => {
-      console.log('[ProfileScreen] Screen focused, refreshing profile...');
-      refreshProfile();
-    }, [refreshProfile])
-  );
+  // Fotoğrafları cache'le - user değiştiğinde güncelle (null durumunda cache'i koru)
+  React.useEffect(() => {
+    if (user?.profilePhotos && user.profilePhotos.length > 0) {
+      setCachedPhotos(user.profilePhotos as Photo[]);
+    }
+  }, [user?.profilePhotos]);
 
+  // Filter photos by type - cache kullan
+  const photosToUse = cachedPhotos.length > 0 ? cachedPhotos : (user?.profilePhotos || []) as Photo[];
+  const corePhotos = photosToUse.filter((p: Photo) => p.type === 'CORE' || !p.type);
+  const dailyPhotos = photosToUse.filter((p: Photo) => p.type === 'DAILY');
+  
+  // useFocusEffect - KAPATILDI (spam yapıyordu)
+  // Focus olunca refreshProfile çağırmıyoruz artık
+
+  // Bio kaydet
   const saveBio = async () => {
     try {
-      // Sadece bio alanını gönder
       await api.put('/api/user/me', { bio });
       await refreshProfile();
-      setEditModalVisible(false);
+      setBioModalVisible(false);
     } catch {
-      // TODO toast
+      Alert.alert('Hata', 'Bio kaydedilemedi.');
     }
+  };
+
+  // Fotoğraf seç ve yükle
+  const pickAndUploadPhoto = async (type: 'CORE' | 'DAILY') => {
+    const currentCount = type === 'CORE' ? corePhotos.length : dailyPhotos.length;
+    const maxCount = type === 'CORE' ? MAX_CORE_PHOTOS : MAX_DAILY_PHOTOS;
+    
+    if (currentCount >= maxCount) {
+      Alert.alert(
+        'Limit Doldu',
+        type === 'CORE' 
+          ? `En fazla ${MAX_CORE_PHOTOS} profil fotoğrafı yükleyebilirsin.`
+          : `Bugün için ${MAX_DAILY_PHOTOS} günlük fotoğraf limitine ulaştın.`
+      );
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.8,
+    });
+
+    if (result.canceled) return;
+
+    try {
+      setUploading(true);
+      console.log('[ProfileScreen] Uploading photo:', { type, uri: result.assets[0].uri.substring(0, 50) });
+      
+      const form = new FormData();
+      form.append('photo', {
+        // @ts-ignore
+        uri: result.assets[0].uri,
+        name: 'photo.jpg',
+        type: 'image/jpeg',
+      });
+      form.append('type', type);
+      
+      const response = await api.post('/api/user/me/photos', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      console.log('[ProfileScreen] Upload success:', response.data);
+      await refreshProfile();
+    } catch (error: any) {
+      console.error('[ProfileScreen] Upload error:', error.response?.data || error.message);
+      const message = error.response?.data?.error?.message || 'Fotoğraf yüklenemedi.';
+      Alert.alert('Hata', message);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // Fotoğraf sil
+  const deletePhoto = async (photoId: string) => {
+    Alert.alert(
+      'Fotoğrafı Sil',
+      'Bu fotoğrafı silmek istediğinden emin misin?',
+      [
+        { text: 'İptal', style: 'cancel' },
+        {
+          text: 'Sil',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await api.delete(`/api/user/me/photos/${photoId}`);
+              await refreshProfile();
+            } catch {
+              Alert.alert('Hata', 'Fotoğraf silinemedi.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Caption düzenleme modalını aç
+  const openCaptionModal = (photo: Photo) => {
+    setSelectedPhoto(photo);
+    setCaptionText(photo.caption || '');
+    setCaptionModalVisible(true);
+  };
+
+  // Caption kaydet
+  const saveCaption = async () => {
+    if (!selectedPhoto) return;
+    
+    try {
+      console.log('[ProfileScreen] Saving caption:', { photoId: selectedPhoto.id, caption: captionText });
+      const response = await api.patch(`/api/user/me/photos/${selectedPhoto.id}/caption`, {
+        caption: captionText,
+      });
+      console.log('[ProfileScreen] Caption saved:', response.data);
+      await refreshProfile();
+      setCaptionModalVisible(false);
+      setSelectedPhoto(null);
+      Alert.alert('Başarılı', 'Açıklama güncellendi.');
+    } catch (error: any) {
+      console.error('[ProfileScreen] Caption save error:', error.response?.data || error.message);
+      Alert.alert('Hata', error.response?.data?.error?.message || 'Açıklama kaydedilemedi.');
+    }
+  };
+
+  // Fotoğraf değiştir
+  const replacePhoto = async (photoId: string) => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.8,
+    });
+
+    if (result.canceled) return;
+
+    try {
+      setUploading(true);
+      const form = new FormData();
+      form.append('photo', {
+        // @ts-ignore
+        uri: result.assets[0].uri,
+        name: 'photo.jpg',
+        type: 'image/jpeg',
+      });
+      
+      await api.put(`/api/user/me/photos/${photoId}`, form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      await refreshProfile();
+    } catch {
+      Alert.alert('Hata', 'Fotoğraf değiştirilemedi.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // Fotoğraf seçenekleri göster
+  const showPhotoOptions = (photo: Photo) => {
+    Alert.alert(
+      'Fotoğraf',
+      'Ne yapmak istersin?',
+      [
+        { text: 'İptal', style: 'cancel' },
+        { text: 'Açıklama Düzenle', onPress: () => openCaptionModal(photo) },
+        { text: 'Fotoğrafı Değiştir', onPress: () => replacePhoto(photo.id) },
+        { text: 'Sil', style: 'destructive', onPress: () => deletePhoto(photo.id) },
+      ]
+    );
+  };
+
+  // Çıkış yapma onayı
+  const handleLogout = () => {
+    Alert.alert(
+      'Çıkış Yap',
+      'Hesabından çıkış yapmak istediğine emin misin?',
+      [
+        { text: 'Hayır', style: 'cancel' },
+        { 
+          text: 'Evet, Çıkış Yap', 
+          style: 'destructive',
+          onPress: async () => {
+            console.log('[ProfileScreen] Logging out...');
+            await logout();
+            console.log('[ProfileScreen] Logout complete');
+          }
+        },
+      ]
+    );
+  };
+
+  // Hesap dondurma onayı
+  const handleFreezeAccount = () => {
+    Alert.alert(
+      'Hesabı Dondur',
+      'Hesabını dondurmak istediğine emin misin?\n\n• Profilin arkadaşlarına görünmez olacak\n• Veriler silinmeyecek\n• Aynı telefon numarası ile tekrar giriş yaparak hesabını aktifleştirebilirsin',
+      [
+        { text: 'İptal', style: 'cancel' },
+        { 
+          text: 'Evet, Dondur', 
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await api.post('/api/user/me/freeze-account');
+              Alert.alert(
+                'Hesap Donduruldu',
+                'Hesabın donduruldu. Aynı telefon numarası ile tekrar giriş yaparak aktifleştirebilirsin.',
+                [{ text: 'Tamam', onPress: logout }]
+              );
+            } catch (error) {
+              Alert.alert('Hata', 'Hesap dondurulurken bir hata oluştu.');
+            }
+          }
+        },
+      ]
+    );
   };
 
   if (!user) return null;
 
-  const primaryPhoto = user.profilePhotos?.[0]?.url;
+  // Prime kullanıcılar özel profil fotoğrafı seçebilir, diğerleri sadece avatar kullanır
+  const hasCustomProfilePhoto = user.isPrime && user.profilePhotoUrl;
+  const profilePhotoUrl = hasCustomProfilePhoto ? getPhotoUrl(user.profilePhotoUrl) : null;
+  const currentPhotos = activeTab === 'core' ? corePhotos : dailyPhotos;
+  const currentMax = activeTab === 'core' ? MAX_CORE_PHOTOS : MAX_DAILY_PHOTOS;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={styles.header}>
-        {/* Avatar veya Profil Fotoğrafı */}
-        <TouchableOpacity 
-          style={styles.avatarContainer}
-          onPress={() => navigation.navigate('AvatarSelection')}
-        >
-          {primaryPhoto ? (
-            <ProfilePhoto
-              uri={primaryPhoto}
-              size={80}
-              online={user.isOnline}
-            />
-          ) : (
-            <View style={[styles.avatarCircle, { backgroundColor: currentAvatar.color }]}>
-              <Text style={styles.avatarEmoji}>{currentAvatar.emoji}</Text>
-            </View>
-          )}
-          <View style={styles.editAvatarBadge}>
-            <Text style={styles.editAvatarText}>✏️</Text>
-          </View>
-        </TouchableOpacity>
-        <View style={styles.nicknameRow}>
-          <Text style={FONTS.h2}>{user.nickname}</Text>
-          {user.isPrime && (
-            <View style={styles.primeBadge}>
-              <Text style={styles.primeBadgeText}>👑 PRIME</Text>
-            </View>
-          )}
-        </View>
-        <Text style={FONTS.caption}>{user.bio || 'Bio yok'}</Text>
-        
-        {/* Jeton ve Spark Bilgileri */}
-        <View style={styles.tokenStats}>
-          <View style={styles.tokenStat}>
-            <Text style={styles.tokenValue}>💎 {user.tokenBalance}</Text>
-            <Text style={styles.tokenLabel}>Jeton</Text>
-          </View>
-          <View style={styles.tokenDivider} />
-          <View style={styles.tokenStat}>
-            <Text style={styles.tokenValue}>✨ {user.totalSparksEarned || 0}</Text>
-            <Text style={styles.tokenLabel}>Spark</Text>
-          </View>
-          <View style={styles.tokenDivider} />
-          <View style={styles.tokenStat}>
-            <Text style={styles.tokenValue}>🔥 {user.monthlySparksEarned || 0}</Text>
-            <Text style={styles.tokenLabel}>Bu Ay</Text>
-          </View>
-        </View>
-        
-        {/* Spark Açıklaması */}
-        <Text style={styles.sparkInfo}>
-          ✨ Spark: Gönderdiğin medyalar açıldığında kazandığın puanlar
-        </Text>
-      </View>
-
-      <FlatList
-        data={user.profilePhotos || []}
-        numColumns={3}
-        style={styles.photoGrid}
-        contentContainerStyle={{ gap: SPACING.sm }}
-        columnWrapperStyle={{ gap: SPACING.sm }}
-        keyExtractor={(item) => item.id}
-        renderItem={({ item }) => (
-          <View style={styles.photoContainer}>
-            <Image source={{ uri: item.url }} style={styles.photo} />
-            {item.caption ? (
-              <View style={styles.captionOverlay}>
-                <Text style={styles.captionText} numberOfLines={1}>
-                  {item.caption}
-                </Text>
-              </View>
-            ) : null}
-          </View>
-        )}
-      />
-
-      <View style={styles.actions}>
-        <TouchableOpacity
-          style={styles.button}
-          onPress={() => setEditModalVisible(true)}
-        >
-          <Text style={FONTS.button}>Profili Düzenle</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.button}>
-          <Text style={FONTS.button}>Ayarlar</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.button, styles.logoutButton]} onPress={logout}>
-          <Text style={[FONTS.button, { color: COLORS.danger }]}>
-            Çıkış Yap
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      <Modal
-        visible={editModalVisible}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setEditModalVisible(false)}
+      <ScrollView 
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 30 }}
       >
+        {/* Header */}
+        <View style={styles.header}>
+          {/* Avatar / Profile Photo */}
+          <TouchableOpacity 
+            style={styles.avatarContainer}
+            onPress={() => navigation.navigate('AvatarSelection')}
+          >
+            {profilePhotoUrl ? (
+              // Prime kullanıcı özel profil fotoğrafı seçmiş
+              <ProfilePhoto uri={profilePhotoUrl} size={80} online={user.isOnline} />
+            ) : (
+              // Avatar göster (varsayılan)
+              <View style={[styles.avatarCircle, { backgroundColor: currentAvatar.color }]}>
+                <Text style={styles.avatarEmoji}>{currentAvatar.emoji}</Text>
+              </View>
+            )}
+            <View style={styles.editAvatarBadge}>
+              <Text style={styles.editAvatarText}>✏️</Text>
+            </View>
+          </TouchableOpacity>
+
+          {/* Nickname & Prime */}
+          <View style={styles.nicknameRow}>
+            <Text style={FONTS.h2}>{user.nickname}</Text>
+            {user.isPrime && (
+              <View style={styles.primeBadge}>
+                <Text style={styles.primeBadgeText}>👑 PRIME</Text>
+              </View>
+            )}
+          </View>
+
+          {/* Bio */}
+          <TouchableOpacity style={styles.bioContainer} onPress={() => setBioModalVisible(true)}>
+            <Text style={styles.bioText}>
+              {user.bio || 'Bio ekle...'}
+            </Text>
+            <View style={styles.privacyHint}>
+              <Ionicons name="eye-off-outline" size={12} color={COLORS.textMuted} />
+              <Text style={styles.privacyHintText}>Sadece arkadaşların görebilir</Text>
+            </View>
+          </TouchableOpacity>
+
+          {/* Stats */}
+          <View style={styles.tokenStats}>
+            <View style={styles.tokenStat}>
+              <Text style={styles.tokenValue}>💎 {user.tokenBalance}</Text>
+              <Text style={styles.tokenLabel}>Elmas</Text>
+            </View>
+            <View style={styles.tokenDivider} />
+            <View style={styles.tokenStat}>
+              <Text style={styles.tokenValue}>✨ {user.totalSparksEarned || 0}</Text>
+              <Text style={styles.tokenLabel}>Spark</Text>
+            </View>
+            <View style={styles.tokenDivider} />
+            <View style={styles.tokenStat}>
+              <Text style={styles.tokenValue}>🔥 {user.monthlySparksEarned || 0}</Text>
+              <Text style={styles.tokenLabel}>Bu Ay</Text>
+            </View>
+          </View>
+
+          {/* Verification Badge / Button */}
+          {user.verified ? (
+            <View style={styles.verifiedBadge}>
+              <Ionicons name="checkmark-circle" size={18} color={COLORS.success} />
+              <Text style={styles.verifiedText}>Doğrulanmış Profil</Text>
+            </View>
+          ) : (
+            <TouchableOpacity 
+              style={styles.verifyButton} 
+              onPress={() => navigation.navigate('VerificationSelfie')}
+            >
+              <Ionicons name="shield-checkmark-outline" size={20} color={COLORS.primary} />
+              <Text style={styles.verifyButtonText}>Profilini Doğrula</Text>
+              <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
+            </TouchableOpacity>
+          )}
+
+          {/* Interests Button */}
+          <TouchableOpacity 
+            style={styles.interestsButton} 
+            onPress={() => navigation.navigate('Interests')}
+          >
+            <Ionicons name="heart-outline" size={20} color={COLORS.accent} />
+            <View style={styles.interestsContent}>
+              <Text style={styles.interestsTitle}>İlgi Alanları</Text>
+              <Text style={styles.interestsSubtitle}>
+                {user.interests && user.interests.length > 0 
+                  ? `${user.interests.slice(0, 3).join(', ')}${user.interests.length > 3 ? ` +${user.interests.length - 3}` : ''}`
+                  : 'Henüz eklenmedi'}
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
+          </TouchableOpacity>
+
+          {/* Event Access Badge */}
+          {(user as any).hasEventAccess && (
+            <TouchableOpacity 
+              style={styles.eventAccessBanner}
+              onPress={() => Alert.alert(
+                '🎉 Özel Etkinlik Erişimi',
+                'Tebrikler! Bu ay spark kazanarak özel etkinliklere erişim hakkı kazandınız.\n\nBize ulaşın:\n📧 info@cardmatch.app\n📱 WhatsApp: +90 555 555 5555',
+                [
+                  { text: 'Tamam', style: 'default' },
+                ]
+              )}
+            >
+              <View style={styles.eventAccessContent}>
+                <Ionicons name="star" size={24} color="#FFD700" />
+                <View style={styles.eventAccessTextContainer}>
+                  <Text style={styles.eventAccessTitle}>🎉 Özel Etkinliklere Erişim</Text>
+                  <Text style={styles.eventAccessSubtitle}>Bu ay spark hedefine ulaştın! Bize ulaş →</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color="#FFD700" />
+              </View>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* Tabs */}
+        <View style={styles.tabs}>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'core' && styles.tabActive]}
+            onPress={() => setActiveTab('core')}
+          >
+            <Text style={[styles.tabText, activeTab === 'core' && styles.tabTextActive]}>
+              📸 Fotoğraflar ({corePhotos.length}/{MAX_CORE_PHOTOS})
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'daily' && styles.tabActive]}
+            onPress={() => setActiveTab('daily')}
+          >
+            <Text style={[styles.tabText, activeTab === 'daily' && styles.tabTextActive]}>
+              ☀️ Bugün ({dailyPhotos.length}/{MAX_DAILY_PHOTOS})
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Photos Privacy Hint */}
+        <View style={styles.photosPrivacyHint}>
+          <Ionicons name="eye-off-outline" size={12} color={COLORS.textMuted} />
+          <Text style={styles.privacyHintText}>Fotoğraflar sadece arkadaşların görebilir</Text>
+        </View>
+
+        {/* Photo Grid */}
+        <View style={styles.photoGrid}>
+          {currentPhotos.map((photo: Photo) => (
+            <TouchableOpacity
+              key={photo.id}
+              style={styles.photoContainer}
+              onPress={() => showPhotoOptions(photo)}
+              onLongPress={() => showPhotoOptions(photo)}
+              delayLongPress={300}
+              activeOpacity={0.7}
+            >
+              <Image source={{ uri: getPhotoUrl(photo.url) }} style={styles.photo} />
+              {photo.caption && (
+                <View style={styles.captionOverlay}>
+                  <Text style={styles.captionText} numberOfLines={1}>
+                    {photo.caption}
+                  </Text>
+                </View>
+              )}
+              {/* Her zaman düzenleme ikonu göster */}
+              <View style={styles.photoEditIcon}>
+                <Ionicons name="create-outline" size={16} color={COLORS.text} />
+              </View>
+            </TouchableOpacity>
+          ))}
+
+          {/* Add Photo Button */}
+          {currentPhotos.length < currentMax && (
+            <TouchableOpacity
+              style={styles.addPhotoButton}
+              onPress={() => pickAndUploadPhoto(activeTab === 'core' ? 'CORE' : 'DAILY')}
+              disabled={uploading}
+            >
+              {uploading ? (
+                <ActivityIndicator color={COLORS.primary} />
+              ) : (
+                <>
+                  <Ionicons name="add" size={32} color={COLORS.primary} />
+                  <Text style={styles.addPhotoText}>Ekle</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* Daily Info */}
+        {activeTab === 'daily' && (
+          <Text style={styles.dailyInfo}>
+            Günlük fotoğraflar arkadaşlarına "bugün ne yaptığını" gösterir ✨
+          </Text>
+        )}
+
+        {/* Actions */}
+        <View style={styles.actions}>
+          <TouchableOpacity style={styles.button}>
+            <Ionicons name="settings-outline" size={20} color={COLORS.text} />
+            <Text style={FONTS.button}>Ayarlar</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.button, styles.logoutButton]} onPress={handleLogout}>
+            <Ionicons name="log-out-outline" size={20} color={COLORS.danger} />
+            <Text style={[FONTS.button, { color: COLORS.danger }]}>Çıkış Yap</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Hesap Dondurma */}
+        <TouchableOpacity style={styles.freezeButton} onPress={handleFreezeAccount}>
+          <Ionicons name="snow-outline" size={18} color={COLORS.textMuted} />
+          <Text style={styles.freezeButtonText}>Hesabımı Dondur</Text>
+        </TouchableOpacity>
+      </ScrollView>
+
+      {/* Bio Modal */}
+      <Modal visible={bioModalVisible} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={FONTS.h3}>Bio Düzenle</Text>
@@ -175,20 +530,41 @@ const ProfileScreen: React.FC<Props> = ({ navigation }) => {
               onChangeText={(text) => text.length <= 150 && setBio(text)}
               multiline
               numberOfLines={4}
-              placeholder="Bio yaz..."
+              placeholder="Kendinden bahset..."
               placeholderTextColor={COLORS.textMuted}
             />
+            <Text style={styles.charCount}>{bio.length}/150</Text>
             <View style={styles.modalActions}>
-              <TouchableOpacity
-                style={styles.modalButton}
-                onPress={() => setEditModalVisible(false)}
-              >
+              <TouchableOpacity style={styles.modalButton} onPress={() => setBioModalVisible(false)}>
                 <Text style={FONTS.button}>İptal</Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.modalButton, { backgroundColor: COLORS.primary }]}
-                onPress={saveBio}
-              >
+              <TouchableOpacity style={[styles.modalButton, styles.modalButtonPrimary]} onPress={saveBio}>
+                <Text style={FONTS.button}>Kaydet</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Caption Modal */}
+      <Modal visible={captionModalVisible} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={FONTS.h3}>Fotoğraf Açıklaması</Text>
+            <TextInput
+              style={styles.textarea}
+              value={captionText}
+              onChangeText={(text) => text.length <= 80 && setCaptionText(text)}
+              placeholder="Açıklama ekle..."
+              placeholderTextColor={COLORS.textMuted}
+              multiline
+            />
+            <Text style={styles.charCount}>{captionText.length}/80</Text>
+            <View style={styles.modalActions}>
+              <TouchableOpacity style={styles.modalButton} onPress={() => setCaptionModalVisible(false)}>
+                <Text style={FONTS.button}>İptal</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modalButton, styles.modalButtonPrimary]} onPress={saveCaption}>
                 <Text style={FONTS.button}>Kaydet</Text>
               </TouchableOpacity>
             </View>
@@ -203,11 +579,21 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
-    padding: SPACING.xl,
   },
   header: {
     alignItems: 'center',
-    marginBottom: SPACING.lg,
+    padding: SPACING.xl,
+    paddingBottom: SPACING.md,
+  },
+  editToggle: {
+    position: 'absolute',
+    top: SPACING.md,
+    right: SPACING.md,
+  },
+  editToggleText: {
+    color: COLORS.primary,
+    fontSize: 16,
+    fontWeight: '600',
   },
   avatarContainer: {
     position: 'relative',
@@ -238,6 +624,49 @@ const styles = StyleSheet.create({
   editAvatarText: {
     fontSize: 14,
   },
+  nicknameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
+    marginTop: SPACING.sm,
+  },
+  primeBadge: {
+    backgroundColor: '#FFD700',
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: 2,
+    borderRadius: 12,
+  },
+  primeBadgeText: {
+    color: '#000',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  bioContainer: {
+    alignItems: 'center',
+  },
+  bioText: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+  },
+  privacyHint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: SPACING.xs,
+    gap: 4,
+  },
+  privacyHintText: {
+    fontSize: 11,
+    color: COLORS.textMuted,
+    opacity: 0.7,
+  },
+  photosPrivacyHint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: SPACING.sm,
+    gap: 4,
+  },
   tokenStats: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -266,40 +695,133 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.textMuted,
     opacity: 0.3,
   },
-  sparkInfo: {
-    ...FONTS.caption,
-    color: COLORS.textMuted,
-    marginTop: SPACING.sm,
-    textAlign: 'center',
-  },
-  nicknameRow: {
+  // Verification Badge
+  verifiedBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: SPACING.sm,
+    gap: 6,
+    marginTop: SPACING.md,
+    backgroundColor: 'rgba(46, 213, 115, 0.15)',
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    borderRadius: 20,
   },
-  primeBadge: {
-    backgroundColor: '#FFD700',
-    paddingHorizontal: SPACING.sm,
-    paddingVertical: 2,
+  verifiedText: {
+    ...FONTS.caption,
+    color: COLORS.success,
+    fontWeight: '600',
+  },
+  verifyButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: SPACING.md,
+    backgroundColor: COLORS.surface,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+  },
+  verifyButtonText: {
+    ...FONTS.body,
+    color: COLORS.primary,
+    flex: 1,
+  },
+  // Interests Button
+  interestsButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: SPACING.sm,
+    backgroundColor: COLORS.surface,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
     borderRadius: 12,
   },
-  primeBadgeText: {
-    color: '#000',
-    fontSize: 12,
-    fontWeight: 'bold',
+  interestsContent: {
+    flex: 1,
   },
-  photoGrid: {
-    marginTop: SPACING.lg,
+  interestsTitle: {
+    ...FONTS.body,
+    color: COLORS.text,
+    fontWeight: '500',
   },
-  photoContainer: {
-    position: 'relative',
-    borderRadius: 12,
+  interestsSubtitle: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+    marginTop: 2,
+  },
+  // Event Access Banner
+  eventAccessBanner: {
+    marginTop: SPACING.md,
+    backgroundColor: 'rgba(255, 215, 0, 0.12)',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 215, 0, 0.4)',
     overflow: 'hidden',
   },
-  photo: {
-    width: 100,
-    height: 130,
+  eventAccessContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: SPACING.md,
+    gap: SPACING.sm,
+  },
+  eventAccessTextContainer: {
+    flex: 1,
+  },
+  eventAccessTitle: {
+    ...FONTS.body,
+    color: '#FFD700',
+    fontWeight: '700',
+  },
+  eventAccessSubtitle: {
+    ...FONTS.caption,
+    color: 'rgba(255, 215, 0, 0.8)',
+    marginTop: 2,
+  },
+  // Tabs
+  tabs: {
+    flexDirection: 'row',
+    marginHorizontal: SPACING.xl,
+    backgroundColor: COLORS.surface,
     borderRadius: 12,
+    padding: 4,
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: SPACING.sm,
+    alignItems: 'center',
+    borderRadius: 10,
+  },
+  tabActive: {
+    backgroundColor: COLORS.primary,
+  },
+  tabText: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+  },
+  tabTextActive: {
+    color: COLORS.text,
+    fontWeight: '600',
+  },
+  // Photo Grid
+  photoGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    padding: SPACING.xl,
+    gap: SPACING.sm,
+  },
+  photoContainer: {
+    width: PHOTO_SIZE,
+    height: PHOTO_SIZE * 1.3,
+    borderRadius: 12,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  photo: {
+    width: '100%',
+    height: '100%',
   },
   captionOverlay: {
     position: 'absolute',
@@ -315,8 +837,49 @@ const styles = StyleSheet.create({
     fontSize: 10,
     textAlign: 'center',
   },
+  editOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  photoEditIcon: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    borderRadius: 12,
+    width: 24,
+    height: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  addPhotoButton: {
+    width: PHOTO_SIZE,
+    height: PHOTO_SIZE * 1.3,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: COLORS.primary,
+    borderStyle: 'dashed',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: COLORS.surface,
+  },
+  addPhotoText: {
+    ...FONTS.caption,
+    color: COLORS.primary,
+    marginTop: 4,
+  },
+  dailyInfo: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+    marginHorizontal: SPACING.xl,
+    marginBottom: SPACING.lg,
+  },
+  // Actions
   actions: {
-    marginTop: SPACING.xl,
+    padding: SPACING.xl,
     gap: SPACING.md,
   },
   button: {
@@ -324,12 +887,29 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingVertical: SPACING.md,
     alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: SPACING.sm,
   },
   logoutButton: {
     backgroundColor: 'transparent',
     borderWidth: 1,
     borderColor: COLORS.danger,
   },
+  freezeButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: SPACING.md,
+    marginTop: SPACING.lg,
+    marginBottom: SPACING.xl,
+    gap: SPACING.xs,
+  },
+  freezeButtonText: {
+    color: COLORS.textMuted,
+    fontSize: 14,
+  },
+  // Modals
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.7)',
@@ -348,8 +928,14 @@ const styles = StyleSheet.create({
     padding: SPACING.md,
     backgroundColor: COLORS.background,
     color: COLORS.text,
-    minHeight: 100,
+    minHeight: 80,
     textAlignVertical: 'top',
+  },
+  charCount: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+    textAlign: 'right',
+    marginTop: SPACING.xs,
   },
   modalActions: {
     flexDirection: 'row',
@@ -359,10 +945,13 @@ const styles = StyleSheet.create({
   },
   modalButton: {
     flex: 1,
-    backgroundColor: COLORS.surface,
+    backgroundColor: COLORS.background,
     borderRadius: 999,
     paddingVertical: SPACING.md,
     alignItems: 'center',
+  },
+  modalButtonPrimary: {
+    backgroundColor: COLORS.primary,
   },
 });
 

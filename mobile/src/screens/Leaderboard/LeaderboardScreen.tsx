@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,10 +9,14 @@ import {
   Modal,
   TextInput,
   Alert,
+  Animated,
+  Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useFocusEffect } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { MainTabParamList } from '../../navigation';
 import { COLORS } from '../../theme/colors';
 import { FONTS } from '../../theme/fonts';
@@ -20,6 +24,8 @@ import { SPACING } from '../../theme/spacing';
 import { api } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import ProfilePhoto from '../../components/ProfilePhoto';
+
+const { width } = Dimensions.get('window');
 
 type Props = NativeStackScreenProps<MainTabParamList, 'Leaderboard'>;
 
@@ -40,8 +46,37 @@ interface LeaderboardEntry {
   nickname: string;
   avatarId?: number;
   profilePhoto?: string;
-  monthlyTokensEarned: number;
-  monthlySparksEarned?: number;
+  isPrime?: boolean;
+  isPlus?: boolean;
+  isBoostActive?: boolean;
+  monthlySparksEarned: number;
+  totalSparksEarned?: number;
+  rank: number;
+  reward?: number | null;
+}
+
+interface CurrentUser {
+  id: string;
+  nickname: string;
+  avatarId?: number;
+  monthlySparksEarned: number;
+  totalSparksEarned: number;
+  rank: number | null;
+  hasEventAccess: boolean;
+  eventAccessGrantedAt?: string | null;
+}
+
+interface LeaderboardGoals {
+  sparkForTop3: number;
+  sparkForEventAccess: number;
+  eventAccessMinSpark: number;
+}
+
+interface LeaderboardResponse {
+  topUsers: LeaderboardEntry[];
+  currentUser: CurrentUser | null;
+  goals: LeaderboardGoals;
+  totalParticipants: number;
 }
 
 interface RewardEligibility {
@@ -55,19 +90,28 @@ interface RewardEligibility {
 
 const LeaderboardScreen: React.FC<Props> = () => {
   const { user } = useAuth();
-  const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
+  const [data, setData] = useState<LeaderboardResponse | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [eligibility, setEligibility] = useState<RewardEligibility | null>(null);
   const [claimModalVisible, setClaimModalVisible] = useState(false);
   const [contactInfo, setContactInfo] = useState('');
   const [claiming, setClaiming] = useState(false);
+  const [sparkAnim] = useState(new Animated.Value(0));
 
   const loadLeaderboard = async () => {
     try {
-      const res = await api.get<{ success: boolean; data: LeaderboardEntry[] }>(
+      const res = await api.get<{ success: boolean; data: LeaderboardResponse }>(
         '/api/leaderboard',
       );
-      setEntries(res.data.data);
+      setData(res.data.data);
+      
+      // Spark animasyonu
+      Animated.spring(sparkAnim, {
+        toValue: 1,
+        friction: 6,
+        tension: 80,
+        useNativeDriver: true,
+      }).start();
     } catch {
       // TODO toast
     }
@@ -82,9 +126,9 @@ const LeaderboardScreen: React.FC<Props> = () => {
     }
   };
 
-  // Ekran her odaklandığında yenile
   useFocusEffect(
     useCallback(() => {
+      sparkAnim.setValue(0);
       loadLeaderboard();
       loadEligibility();
     }, [])
@@ -117,9 +161,9 @@ const LeaderboardScreen: React.FC<Props> = () => {
   };
 
   const getMedal = (rank: number) => {
-    if (rank === 1) return '🥇';
-    if (rank === 2) return '🥈';
-    if (rank === 3) return '🥉';
+    if (rank === 1) return { emoji: '🥇', color: '#FFD700' };
+    if (rank === 2) return { emoji: '🥈', color: '#C0C0C0' };
+    if (rank === 3) return { emoji: '🥉', color: '#CD7F32' };
     return null;
   };
 
@@ -127,14 +171,106 @@ const LeaderboardScreen: React.FC<Props> = () => {
     return AVATARS.find((a) => a.id === avatarId) || AVATARS[0];
   };
 
-  const userRank = entries.findIndex((e) => e.id === user?.id) + 1;
+  const formatNumber = (num: number) => {
+    if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+    if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+    return num.toString();
+  };
 
-  return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <Text style={[FONTS.h2, { padding: SPACING.xl }]}>Aylık Liderlik Tablosu</Text>
-      <Text style={[FONTS.caption, { paddingHorizontal: SPACING.xl, marginBottom: SPACING.sm }]}>
-        Fotoğraf ve video gönderip başkalarının açmasını sağla, spark kazan!
-      </Text>
+  const currentUser = data?.currentUser;
+  const goals = data?.goals;
+
+  // Progress bar için yüzde hesaplama
+  const eventAccessProgress = currentUser && goals
+    ? Math.min(100, (currentUser.monthlySparksEarned / goals.eventAccessMinSpark) * 100)
+    : 0;
+
+  const renderHeader = () => (
+    <View style={styles.headerContainer}>
+      {/* Başlık */}
+      <View style={styles.titleSection}>
+        <Text style={styles.title}>Aylık Liderlik Tablosu</Text>
+        <Text style={styles.subtitle}>
+          Fotoğraf ve video gönder, birisi açınca spark kazan!
+        </Text>
+      </View>
+
+      {/* Kullanıcı Kartı */}
+      {currentUser && (
+        <Animated.View 
+          style={[
+            styles.userCard,
+            {
+              transform: [{ scale: sparkAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0.9, 1],
+              })}],
+              opacity: sparkAnim,
+            }
+          ]}
+        >
+          <LinearGradient
+            colors={[COLORS.primary + '30', COLORS.accent + '20']}
+            style={styles.userCardGradient}
+          >
+            <View style={styles.userCardTop}>
+              <View style={styles.userCardRank}>
+                {currentUser.rank ? (
+                  <>
+                    <Text style={styles.userRankNumber}>{currentUser.rank}</Text>
+                    <Text style={styles.userRankLabel}>sıra</Text>
+                  </>
+                ) : (
+                  <Text style={styles.userRankLabel}>Sıralama dışı</Text>
+                )}
+              </View>
+              <View style={styles.userCardSparks}>
+                <Ionicons name="sparkles" size={24} color={COLORS.accent} />
+                <Text style={styles.userSparkCount}>
+                  {formatNumber(currentUser.monthlySparksEarned)}
+                </Text>
+                <Text style={styles.userSparkLabel}>Spark</Text>
+              </View>
+            </View>
+
+            {/* Hedefler */}
+            {goals && goals.sparkForTop3 > 0 && (
+              <View style={styles.goalBanner}>
+                <Ionicons name="trophy" size={16} color="#FFD700" />
+                <Text style={styles.goalText}>
+                  Top 3 için {formatNumber(goals.sparkForTop3)} spark daha!
+                </Text>
+              </View>
+            )}
+
+            {/* Event Access Progress */}
+            <View style={styles.eventAccessSection}>
+              <View style={styles.eventAccessHeader}>
+                <View style={styles.eventAccessLabel}>
+                  <Ionicons name="star" size={16} color={COLORS.accent} />
+                  <Text style={styles.eventAccessTitle}>Özel Etkinlik Erişimi</Text>
+                </View>
+                <Text style={styles.eventAccessProgress}>
+                  {formatNumber(currentUser.monthlySparksEarned)} / {formatNumber(goals?.eventAccessMinSpark || 10000)}
+                </Text>
+              </View>
+              <View style={styles.progressBar}>
+                <View style={[styles.progressFill, { width: `${eventAccessProgress}%` }]} />
+              </View>
+              {currentUser.hasEventAccess ? (
+                <View style={styles.accessGrantedBadge}>
+                  <Ionicons name="checkmark-circle" size={14} color={COLORS.success} />
+                  <Text style={styles.accessGrantedText}>Erişim Kazanıldı!</Text>
+                </View>
+              ) : goals && goals.sparkForEventAccess > 0 && (
+                <Text style={styles.eventAccessHint}>
+                  {formatNumber(goals.sparkForEventAccess)} spark daha kazanarak özel etkinliklere erişim hakkı kazan!
+                </Text>
+              )}
+            </View>
+          </LinearGradient>
+        </Animated.View>
+      )}
 
       {/* Ödül Talebi Bannerı */}
       {eligibility?.isEligible && !eligibility.alreadyClaimed && (
@@ -142,7 +278,12 @@ const LeaderboardScreen: React.FC<Props> = () => {
           style={styles.rewardBanner}
           onPress={() => setClaimModalVisible(true)}
         >
-          <View style={styles.rewardBannerContent}>
+          <LinearGradient
+            colors={['#FFD700', '#FFA500']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={styles.rewardBannerGradient}
+          >
             <Text style={styles.rewardBannerEmoji}>🏆</Text>
             <View style={styles.rewardBannerText}>
               <Text style={styles.rewardBannerTitle}>
@@ -152,90 +293,119 @@ const LeaderboardScreen: React.FC<Props> = () => {
                 ₺{eligibility.rewardAmount} ödül kazandın! Talep et →
               </Text>
             </View>
-          </View>
+            <Ionicons name="chevron-forward" size={24} color="#000" />
+          </LinearGradient>
         </TouchableOpacity>
       )}
 
       {eligibility?.alreadyClaimed && (
         <View style={styles.claimedBanner}>
+          <Ionicons name="checkmark-circle" size={20} color={COLORS.success} />
           <Text style={styles.claimedText}>
-            ✅ Ödül talebiniz alındı ({eligibility.claimStatus})
+            Ödül talebiniz alındı ({eligibility.claimStatus})
           </Text>
         </View>
       )}
 
-      {/* Kullanıcının Kendi Sıralaması */}
-      {userRank > 3 && userRank <= 50 && (
-        <View style={styles.userRankBanner}>
-          <Text style={styles.userRankText}>
-            Sen şu an {userRank}. sıradasın • ✨ {user?.monthlySparksEarned || 0} Spark
-          </Text>
-          <Text style={styles.userRankSubtext}>
-            İlk 3'e girmek için daha çok spark kazan!
+      {/* Toplam Katılımcı */}
+      {data && data.totalParticipants > 0 && (
+        <View style={styles.participantsRow}>
+          <Ionicons name="people" size={16} color={COLORS.textMuted} />
+          <Text style={styles.participantsText}>
+            {data.totalParticipants} katılımcı
           </Text>
         </View>
       )}
+    </View>
+  );
 
+  const renderItem = ({ item }: { item: LeaderboardEntry }) => {
+    const rank = item.rank;
+    const medal = getMedal(rank);
+    const isCurrentUser = item.id === user?.id;
+    const avatar = getAvatar(item.avatarId);
+
+    return (
+      <View
+        style={[
+          styles.row,
+          isCurrentUser && styles.currentUserRow,
+          rank <= 3 && styles.topThreeRow,
+        ]}
+      >
+        <View style={styles.rankContainer}>
+          {medal ? (
+            <Text style={styles.medalText}>{medal.emoji}</Text>
+          ) : (
+            <Text style={styles.rankText}>{rank}</Text>
+          )}
+        </View>
+        
+        <View style={styles.avatarContainer}>
+          {item.profilePhoto ? (
+            <ProfilePhoto uri={item.profilePhoto} size={48} />
+          ) : (
+            <View style={[styles.avatarCircle, { backgroundColor: avatar.color }]}>
+              <Text style={styles.avatarEmoji}>{avatar.emoji}</Text>
+            </View>
+          )}
+          {/* Boost Badge */}
+          {item.isBoostActive && (
+            <View style={styles.boostBadge}>
+              <Ionicons name="rocket" size={10} color="#fff" />
+            </View>
+          )}
+        </View>
+        
+        <View style={styles.info}>
+          <View style={styles.nameRow}>
+            <Text style={[styles.nickname, isCurrentUser && styles.currentUserText]}>
+              {item.nickname}
+            </Text>
+            {isCurrentUser && <Text style={styles.youBadge}>(Sen)</Text>}
+            {item.isPrime && <Text style={styles.primeBadge}>👑</Text>}
+          </View>
+          <View style={styles.sparkRow}>
+            <Ionicons name="sparkles" size={12} color={COLORS.accent} />
+            <Text style={styles.sparkText}>
+              {formatNumber(item.monthlySparksEarned)} Spark
+            </Text>
+          </View>
+        </View>
+        
+        {item.reward && (
+          <View style={[styles.prizeIndicator, rank === 1 && styles.firstPrize]}>
+            <Text style={styles.prizeText}>₺{item.reward}</Text>
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  return (
+    <SafeAreaView style={styles.container} edges={['top']}>
       <FlatList
-        data={entries}
+        data={data?.topUsers || []}
         keyExtractor={(item) => item.id}
+        renderItem={renderItem}
+        ListHeaderComponent={renderHeader}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          <RefreshControl 
+            refreshing={refreshing} 
+            onRefresh={onRefresh}
+            tintColor={COLORS.accent}
+          />
         }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
-            <Text style={FONTS.h3}>Henüz kimse spark kazanmadı 🏆</Text>
-            <Text style={[FONTS.caption, { marginTop: SPACING.sm, textAlign: 'center' }]}>
+            <Ionicons name="trophy-outline" size={64} color={COLORS.textMuted} />
+            <Text style={styles.emptyTitle}>Henüz kimse spark kazanmadı</Text>
+            <Text style={styles.emptySubtitle}>
               Fotoğraf veya video gönder, birisi açınca spark kazan!
             </Text>
           </View>
         }
-        renderItem={({ item, index }) => {
-          const rank = index + 1;
-          const medal = getMedal(rank);
-          const isCurrentUser = item.id === user?.id;
-          const avatar = getAvatar(item.avatarId);
-
-          return (
-            <View
-              style={[
-                styles.row,
-                isCurrentUser && styles.currentUserRow,
-                rank <= 3 && styles.topThreeRow,
-              ]}
-            >
-              <View style={styles.rankContainer}>
-                {medal ? (
-                  <Text style={styles.medalText}>{medal}</Text>
-                ) : (
-                  <Text style={styles.rankText}>{rank}</Text>
-                )}
-              </View>
-              {item.profilePhoto ? (
-                <ProfilePhoto uri={item.profilePhoto} size={44} />
-              ) : (
-                <View style={[styles.avatarCircle, { backgroundColor: avatar.color }]}>
-                  <Text style={styles.avatarEmoji}>{avatar.emoji}</Text>
-                </View>
-              )}
-              <View style={styles.info}>
-                <Text style={[FONTS.body, isCurrentUser && styles.currentUserText]}>
-                  {item.nickname} {isCurrentUser && '(Sen)'}
-                </Text>
-                <Text style={styles.sparkText}>
-                  ✨ {item.monthlySparksEarned || item.monthlyTokensEarned} Spark
-                </Text>
-              </View>
-              {rank <= 3 && (
-                <View style={styles.prizeIndicator}>
-                  <Text style={styles.prizeText}>
-                    {rank === 1 ? '₺500' : rank === 2 ? '₺300' : '₺150'}
-                  </Text>
-                </View>
-              )}
-            </View>
-          );
-        }}
+        contentContainerStyle={styles.listContent}
       />
 
       {/* Ödül Talep Modal */}
@@ -247,9 +417,13 @@ const LeaderboardScreen: React.FC<Props> = () => {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>🏆 Ödül Talebi</Text>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalEmoji}>🏆</Text>
+              <Text style={styles.modalTitle}>Ödül Talebi</Text>
+            </View>
             <Text style={styles.modalSubtitle}>
-              Tebrikler! {eligibility?.rank}. sırada bitirdin ve ₺{eligibility?.rewardAmount} ödül kazandın!
+              Tebrikler! {eligibility?.rank}. sırada bitirdin ve{'\n'}
+              <Text style={styles.rewardAmount}>₺{eligibility?.rewardAmount}</Text> ödül kazandın!
             </Text>
 
             <Text style={styles.inputLabel}>İletişim Bilgisi (IBAN veya Telefon)</Text>
@@ -274,9 +448,14 @@ const LeaderboardScreen: React.FC<Props> = () => {
                 onPress={handleClaimReward}
                 disabled={claiming}
               >
-                <Text style={styles.claimButtonText}>
-                  {claiming ? 'Gönderiliyor...' : 'Talep Et'}
-                </Text>
+                <LinearGradient
+                  colors={['#FFD700', '#FFA500']}
+                  style={styles.claimButtonGradient}
+                >
+                  <Text style={styles.claimButtonText}>
+                    {claiming ? 'Gönderiliyor...' : 'Talep Et'}
+                  </Text>
+                </LinearGradient>
               </TouchableOpacity>
             </View>
           </View>
@@ -291,18 +470,140 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
-  rewardBanner: {
-    marginHorizontal: SPACING.xl,
-    marginBottom: SPACING.md,
-    backgroundColor: 'rgba(255, 215, 0, 0.15)',
-    borderWidth: 1,
-    borderColor: '#FFD700',
-    borderRadius: 12,
-    padding: SPACING.md,
+  listContent: {
+    paddingBottom: SPACING.xl + 20, // Tab bar için ekstra padding
   },
-  rewardBannerContent: {
+  headerContainer: {
+    padding: SPACING.lg,
+  },
+  titleSection: {
+    marginBottom: SPACING.lg,
+  },
+  title: {
+    ...FONTS.h2,
+    color: COLORS.text,
+  },
+  subtitle: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+    marginTop: 4,
+  },
+  // User Card
+  userCard: {
+    marginBottom: SPACING.lg,
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  userCardGradient: {
+    padding: SPACING.lg,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  userCardTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: SPACING.md,
+  },
+  userCardRank: {
+    alignItems: 'center',
+  },
+  userRankNumber: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: COLORS.accent,
+  },
+  userRankLabel: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+  },
+  userCardSparks: {
+    alignItems: 'center',
+  },
+  userSparkCount: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: COLORS.text,
+  },
+  userSparkLabel: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+  },
+  goalBanner: {
     flexDirection: 'row',
     alignItems: 'center',
+    backgroundColor: 'rgba(255, 215, 0, 0.15)',
+    padding: SPACING.sm,
+    borderRadius: 8,
+    marginBottom: SPACING.md,
+    gap: 8,
+  },
+  goalText: {
+    ...FONTS.caption,
+    color: '#FFD700',
+    fontWeight: '600',
+  },
+  eventAccessSection: {
+    marginTop: SPACING.sm,
+  },
+  eventAccessHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: SPACING.xs,
+  },
+  eventAccessLabel: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  eventAccessTitle: {
+    ...FONTS.caption,
+    color: COLORS.text,
+    fontWeight: '600',
+  },
+  eventAccessProgress: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+  },
+  progressBar: {
+    height: 8,
+    backgroundColor: COLORS.border,
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: COLORS.accent,
+    borderRadius: 4,
+  },
+  accessGrantedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: SPACING.xs,
+  },
+  accessGrantedText: {
+    ...FONTS.caption,
+    color: COLORS.success,
+    fontWeight: '600',
+  },
+  eventAccessHint: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+    marginTop: SPACING.xs,
+  },
+  // Reward Banner
+  rewardBanner: {
+    marginBottom: SPACING.md,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  rewardBannerGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: SPACING.md,
   },
   rewardBannerEmoji: {
     fontSize: 32,
@@ -313,69 +614,57 @@ const styles = StyleSheet.create({
   },
   rewardBannerTitle: {
     ...FONTS.body,
-    color: '#FFD700',
-    fontWeight: '600',
+    color: '#000',
+    fontWeight: '700',
   },
   rewardBannerSubtitle: {
     ...FONTS.caption,
-    color: '#FFD700',
+    color: 'rgba(0,0,0,0.7)',
   },
   claimedBanner: {
-    marginHorizontal: SPACING.xl,
-    marginBottom: SPACING.md,
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: COLORS.surface,
     borderRadius: 12,
     padding: SPACING.md,
-    alignItems: 'center',
+    marginBottom: SPACING.md,
+    gap: 8,
   },
   claimedText: {
     ...FONTS.body,
     color: COLORS.success,
   },
-  userRankBanner: {
-    marginHorizontal: SPACING.xl,
-    marginBottom: SPACING.md,
-    backgroundColor: COLORS.surface,
-    borderRadius: 12,
-    padding: SPACING.md,
+  participantsRow: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 6,
+    marginBottom: SPACING.sm,
   },
-  userRankText: {
-    ...FONTS.body,
-    color: COLORS.text,
-  },
-  userRankSubtext: {
+  participantsText: {
     ...FONTS.caption,
     color: COLORS.textMuted,
-    marginTop: 2,
   },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: SPACING.xl,
-    marginTop: SPACING.xl * 2,
-  },
+  // List Row
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: SPACING.lg,
+    padding: SPACING.md,
+    marginHorizontal: SPACING.lg,
+    marginBottom: SPACING.xs,
+    backgroundColor: COLORS.surface,
+    borderRadius: 12,
     gap: SPACING.md,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.surface,
   },
   currentUserRow: {
-    backgroundColor: 'rgba(108, 92, 231, 0.1)',
+    borderWidth: 1,
+    borderColor: COLORS.accent,
+    backgroundColor: COLORS.accent + '10',
   },
   topThreeRow: {
-    backgroundColor: 'rgba(255, 215, 0, 0.05)',
-  },
-  currentUserText: {
-    color: COLORS.primary,
-    fontWeight: '600',
+    backgroundColor: 'rgba(255, 215, 0, 0.08)',
   },
   rankContainer: {
-    width: 40,
+    width: 36,
     alignItems: 'center',
   },
   medalText: {
@@ -384,58 +673,137 @@ const styles = StyleSheet.create({
   rankText: {
     ...FONTS.body,
     color: COLORS.textMuted,
+    fontWeight: '600',
+  },
+  avatarContainer: {
+    position: 'relative',
   },
   avatarCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     justifyContent: 'center',
     alignItems: 'center',
   },
   avatarEmoji: {
-    fontSize: 22,
+    fontSize: 24,
+  },
+  boostBadge: {
+    position: 'absolute',
+    bottom: -2,
+    right: -2,
+    backgroundColor: COLORS.accent,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: COLORS.surface,
   },
   info: {
     flex: 1,
+  },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  nickname: {
+    ...FONTS.body,
+    color: COLORS.text,
+    fontWeight: '500',
+  },
+  currentUserText: {
+    color: COLORS.accent,
+    fontWeight: '700',
+  },
+  youBadge: {
+    ...FONTS.caption,
+    color: COLORS.accent,
+    fontWeight: '600',
+  },
+  primeBadge: {
+    fontSize: 14,
+  },
+  sparkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
   },
   sparkText: {
     ...FONTS.caption,
     color: COLORS.textMuted,
   },
   prizeIndicator: {
-    backgroundColor: '#FFD700',
+    backgroundColor: 'rgba(255, 215, 0, 0.2)',
     paddingHorizontal: SPACING.sm,
-    paddingVertical: 4,
+    paddingVertical: 6,
     borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FFD700',
+  },
+  firstPrize: {
+    backgroundColor: '#FFD700',
   },
   prizeText: {
     color: '#000',
     fontWeight: 'bold',
-    fontSize: 12,
+    fontSize: 13,
   },
-  // Modal styles
+  // Empty State
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: SPACING.xl * 2,
+  },
+  emptyTitle: {
+    ...FONTS.h3,
+    color: COLORS.text,
+    marginTop: SPACING.lg,
+  },
+  emptySubtitle: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+    marginTop: SPACING.sm,
+  },
+  // Modal
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: 'rgba(0,0,0,0.8)',
     justifyContent: 'center',
     padding: SPACING.xl,
   },
   modalContent: {
     backgroundColor: COLORS.surface,
-    borderRadius: 16,
+    borderRadius: 20,
     padding: SPACING.xl,
+  },
+  modalHeader: {
+    alignItems: 'center',
+    marginBottom: SPACING.md,
+  },
+  modalEmoji: {
+    fontSize: 48,
+    marginBottom: SPACING.sm,
   },
   modalTitle: {
     ...FONTS.h2,
     color: COLORS.text,
-    textAlign: 'center',
-    marginBottom: SPACING.sm,
   },
   modalSubtitle: {
     ...FONTS.body,
     color: COLORS.textMuted,
     textAlign: 'center',
     marginBottom: SPACING.xl,
+  },
+  rewardAmount: {
+    color: '#FFD700',
+    fontWeight: 'bold',
+    fontSize: 24,
   },
   inputLabel: {
     ...FONTS.caption,
@@ -448,6 +816,8 @@ const styles = StyleSheet.create({
     padding: SPACING.md,
     color: COLORS.text,
     marginBottom: SPACING.lg,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
   modalActions: {
     flexDirection: 'row',
@@ -459,6 +829,8 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
     borderRadius: 12,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
   cancelButtonText: {
     ...FONTS.button,
@@ -466,9 +838,11 @@ const styles = StyleSheet.create({
   },
   claimButton: {
     flex: 1,
-    paddingVertical: SPACING.md,
-    backgroundColor: '#FFD700',
     borderRadius: 12,
+    overflow: 'hidden',
+  },
+  claimButtonGradient: {
+    paddingVertical: SPACING.md,
     alignItems: 'center',
   },
   claimButtonDisabled: {
@@ -477,6 +851,7 @@ const styles = StyleSheet.create({
   claimButtonText: {
     ...FONTS.button,
     color: '#000',
+    fontWeight: '700',
   },
 });
 

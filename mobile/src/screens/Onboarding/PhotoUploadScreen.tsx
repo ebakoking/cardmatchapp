@@ -9,6 +9,7 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -72,7 +73,6 @@ const PhotoUploadScreen: React.FC<Props> = ({ navigation }) => {
 
   const uploadAll = async () => {
     if (photos.length === 0) {
-      // Fotoğraf yoksa direkt devam et
       navigation.replace('BioInput');
       return;
     }
@@ -87,10 +87,11 @@ const PhotoUploadScreen: React.FC<Props> = ({ navigation }) => {
           name: 'photo.jpg',
           type: 'image/jpeg',
         });
-        // Caption varsa ekle
+        form.append('type', 'CORE');
         if (p.caption) {
           form.append('caption', p.caption);
         }
+        console.log('[PhotoUpload] Uploading photo with type: CORE');
         await api.post('/api/user/me/photos', form, {
           headers: { 'Content-Type': 'multipart/form-data' },
         });
@@ -107,87 +108,118 @@ const PhotoUploadScreen: React.FC<Props> = ({ navigation }) => {
     navigation.replace('BioInput');
   };
 
+  const goBack = () => {
+    navigation.goBack();
+  };
+
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.emoji}>📸</Text>
-        <Text style={styles.title}>Fotoğraf Ekle</Text>
-        <Text style={styles.subtitle}>
-          İstersen fotoğraf ekleyebilirsin, ya da avatarla devam edebilirsin
-        </Text>
-      </View>
+      {/* Back Button */}
+      <TouchableOpacity style={styles.backButton} onPress={goBack}>
+        <Ionicons name="chevron-back" size={24} color={COLORS.text} />
+      </TouchableOpacity>
 
-      <View style={styles.photoGrid}>
-        {[0, 1, 2, 3, 4, 5].map((index) => {
-          const photo = photos[index];
-          return (
-            <View key={index} style={styles.photoSlotContainer}>
-              <TouchableOpacity
-                style={styles.photoSlot}
-                onPress={photo ? () => removePhoto(photo.id) : pickPhoto}
-              >
-                {photo ? (
-                  <>
-                    <Image source={{ uri: photo.uri }} style={styles.photo} />
-                    <View style={styles.removeButton}>
-                      <Text style={styles.removeButtonText}>✕</Text>
-                    </View>
-                    {/* Caption indicator */}
-                    {photo.caption ? (
-                      <View style={styles.captionBadge}>
-                        <Ionicons name="chatbubble" size={10} color={COLORS.text} />
-                      </View>
-                    ) : null}
-                  </>
-                ) : (
-                  <View style={styles.addSlot}>
-                    <Text style={styles.addIcon}>+</Text>
-                    {index === 0 && <Text style={styles.addText}>Ekle</Text>}
-                  </View>
-                )}
-              </TouchableOpacity>
-              {/* Caption button - sadece fotoğraf varsa */}
-              {photo && (
+      <ScrollView 
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Header - Minimal */}
+        <View style={styles.header}>
+          <Text style={styles.title}>Fotoğraf Ekle</Text>
+          <Text style={styles.subtitle}>
+            Fotoğraflar yalnızca sen izin verdiğinde görünür.
+          </Text>
+        </View>
+
+        {/* Photo Grid - Premium feel */}
+        <View style={styles.photoGrid}>
+          {[0, 1, 2, 3, 4, 5].map((index) => {
+            const photo = photos[index];
+            const isPrimary = index === 0;
+            
+            return (
+              <View key={index} style={styles.photoSlotContainer}>
                 <TouchableOpacity
-                  style={styles.captionButton}
-                  onPress={() => openCaptionModal(photo)}
+                  style={[
+                    styles.photoSlot,
+                    isPrimary && !photo && styles.primarySlot,
+                    !isPrimary && !photo && styles.secondarySlot,
+                  ]}
+                  onPress={photo ? () => removePhoto(photo.id) : pickPhoto}
+                  activeOpacity={0.7}
                 >
-                  <Ionicons 
-                    name={photo.caption ? 'create' : 'add-circle-outline'} 
-                    size={14} 
-                    color={COLORS.accent} 
-                  />
-                  <Text style={styles.captionButtonText}>
-                    {photo.caption ? 'Düzenle' : 'Açıklama'}
-                  </Text>
+                  {photo ? (
+                    <>
+                      <Image source={{ uri: photo.uri }} style={styles.photo} />
+                      <View style={styles.removeButton}>
+                        <Ionicons name="close" size={14} color="#fff" />
+                      </View>
+                      {photo.caption ? (
+                        <View style={styles.captionBadge}>
+                          <Ionicons name="chatbubble" size={10} color={COLORS.text} />
+                        </View>
+                      ) : null}
+                    </>
+                  ) : (
+                    <View style={styles.addSlotContent}>
+                      {isPrimary ? (
+                        <>
+                          <View style={styles.primaryAddIcon}>
+                            <Ionicons name="add" size={28} color={COLORS.accent} />
+                          </View>
+                          <Text style={styles.primaryAddText}>Fotoğraf Ekle</Text>
+                        </>
+                      ) : (
+                        <Ionicons name="add" size={24} color={COLORS.textMuted} style={{ opacity: 0.5 }} />
+                      )}
+                    </View>
+                  )}
                 </TouchableOpacity>
-              )}
-            </View>
-          );
-        })}
-      </View>
+                
+                {/* Caption button */}
+                {photo && (
+                  <TouchableOpacity
+                    style={styles.captionButton}
+                    onPress={() => openCaptionModal(photo)}
+                  >
+                    <Ionicons 
+                      name={photo.caption ? 'create' : 'add-circle-outline'} 
+                      size={14} 
+                      color={COLORS.accent} 
+                    />
+                    <Text style={styles.captionButtonText}>
+                      {photo.caption ? 'Düzenle' : 'Açıklama'}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            );
+          })}
+        </View>
+      </ScrollView>
 
-      <View style={styles.infoBox}>
-        <Text style={styles.infoIcon}>ℹ️</Text>
-        <Text style={styles.infoText}>
-          Fotoğraf eklemek opsiyoneldir. Anonim kalmak istersen avatarla devam edebilirsin.
-        </Text>
-      </View>
-
+      {/* Footer - Fixed at bottom */}
       <View style={styles.footer}>
+        {/* Confidence microcopy */}
+        <Text style={styles.confidenceText}>
+          Profilinden dilediğin zaman fotoğraf ekleyebilirsin.
+        </Text>
+
+        {/* Primary CTA - Always active */}
         <TouchableOpacity
-          style={styles.continueButton}
+          style={[styles.continueButton, uploading && styles.continueButtonDisabled]}
           disabled={uploading}
           onPress={uploadAll}
         >
           <Text style={styles.continueButtonText}>
-            {uploading ? 'Yükleniyor...' : photos.length > 0 ? 'Devam Et' : 'Fotoğrafsız Devam Et'}
+            {uploading ? 'Yükleniyor...' : 'Devam Et'}
           </Text>
         </TouchableOpacity>
 
-        {photos.length > 0 && (
-          <TouchableOpacity style={styles.skipButton} onPress={skipPhotos}>
-            <Text style={styles.skipText}>Fotoğrafları Atla</Text>
+        {/* Secondary link - Skip option */}
+        {photos.length === 0 && (
+          <TouchableOpacity style={styles.skipLink} onPress={skipPhotos}>
+            <Text style={styles.skipLinkText}>Şimdilik fotoğrafsız devam et</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -255,32 +287,46 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  backButton: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 60 : 20,
+    left: SPACING.lg,
+    zIndex: 10,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  scrollContent: {
     padding: SPACING.xl,
+    paddingBottom: SPACING.md,
+    paddingTop: SPACING.xxl,
   },
   header: {
     alignItems: 'center',
     marginBottom: SPACING.xl,
-  },
-  emoji: {
-    fontSize: 50,
-    marginBottom: SPACING.sm,
+    marginTop: SPACING.lg,
   },
   title: {
     ...FONTS.h2,
     color: COLORS.text,
+    marginBottom: SPACING.xs,
   },
   subtitle: {
-    ...FONTS.caption,
-    color: COLORS.textMuted,
+    ...FONTS.body,
+    color: COLORS.textSecondary,
     textAlign: 'center',
-    marginTop: SPACING.xs,
+    fontSize: 14,
   },
+  // Photo Grid
   photoGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'center',
-    gap: SPACING.sm,
-    marginBottom: SPACING.xl,
+    gap: SPACING.md,
   },
   photoSlotContainer: {
     alignItems: 'center',
@@ -288,8 +334,22 @@ const styles = StyleSheet.create({
   photoSlot: {
     width: 100,
     height: 130,
-    borderRadius: 12,
+    borderRadius: 16,
     overflow: 'hidden',
+  },
+  // Primary slot - First slot with emphasis
+  primarySlot: {
+    backgroundColor: 'rgba(0, 206, 201, 0.08)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(0, 206, 201, 0.3)',
+    borderStyle: 'solid',
+  },
+  // Secondary slots - Subtle placeholders
+  secondarySlot: {
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    borderStyle: 'solid',
   },
   photo: {
     width: '100%',
@@ -297,24 +357,19 @@ const styles = StyleSheet.create({
   },
   removeButton: {
     position: 'absolute',
-    top: 4,
-    right: 4,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    top: 6,
+    right: 6,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  removeButtonText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
   captionBadge: {
     position: 'absolute',
-    bottom: 4,
-    right: 4,
+    bottom: 6,
+    right: 6,
     width: 20,
     height: 20,
     borderRadius: 10,
@@ -325,53 +380,45 @@ const styles = StyleSheet.create({
   captionButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 4,
-    gap: 2,
+    marginTop: 6,
+    gap: 3,
   },
   captionButtonText: {
     fontSize: 11,
     color: COLORS.accent,
   },
-  addSlot: {
-    width: '100%',
-    height: '100%',
-    backgroundColor: COLORS.surface,
-    borderWidth: 2,
-    borderColor: COLORS.border,
-    borderStyle: 'dashed',
-    borderRadius: 12,
+  addSlotContent: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: SPACING.xs,
+  },
+  primaryAddIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(0, 206, 201, 0.15)',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  addIcon: {
-    fontSize: 30,
-    color: COLORS.textMuted,
+  primaryAddText: {
+    fontSize: 12,
+    color: COLORS.accent,
+    fontWeight: '500',
   },
-  addText: {
-    ...FONTS.caption,
-    color: COLORS.textMuted,
-    marginTop: SPACING.xs,
-  },
-  infoBox: {
-    flexDirection: 'row',
-    backgroundColor: COLORS.surface,
-    padding: SPACING.md,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  infoIcon: {
-    fontSize: 20,
-    marginRight: SPACING.sm,
-  },
-  infoText: {
-    ...FONTS.caption,
-    color: COLORS.textMuted,
-    flex: 1,
-  },
+  // Footer
   footer: {
-    flex: 1,
-    justifyContent: 'flex-end',
-    paddingBottom: SPACING.lg,
+    paddingHorizontal: SPACING.xl,
+    paddingBottom: SPACING.xl,
+    paddingTop: SPACING.md,
+    backgroundColor: COLORS.background,
+  },
+  confidenceText: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+    marginBottom: SPACING.md,
+    fontSize: 13,
   },
   continueButton: {
     backgroundColor: COLORS.primary,
@@ -379,18 +426,23 @@ const styles = StyleSheet.create({
     paddingVertical: SPACING.lg,
     alignItems: 'center',
   },
+  continueButtonDisabled: {
+    opacity: 0.7,
+  },
   continueButtonText: {
     ...FONTS.button,
     color: COLORS.background,
     fontSize: 16,
   },
-  skipButton: {
-    marginTop: SPACING.md,
+  skipLink: {
+    marginTop: SPACING.lg,
     alignItems: 'center',
+    paddingVertical: SPACING.sm,
   },
-  skipText: {
-    ...FONTS.body,
+  skipLinkText: {
     color: COLORS.textMuted,
+    fontSize: 14,
+    textDecorationLine: 'underline',
   },
   // Modal styles
   modalOverlay: {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,9 +9,11 @@ import {
   Dimensions,
   Alert,
   ActivityIndicator,
+  Animated,
 } from 'react-native';
-// expo-screen-capture Expo Go'da desteklenmiyor, production build'de aktif edilecek
-// import * as ScreenCapture from 'expo-screen-capture';
+import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Video, ResizeMode } from 'expo-av';
 import { COLORS } from '../theme/colors';
 import { FONTS } from '../theme/fonts';
 import { SPACING } from '../theme/spacing';
@@ -21,19 +23,19 @@ const { width, height } = Dimensions.get('window');
 interface Props {
   visible: boolean;
   onClose: () => void;
-  onViewed?: (messageId: string, mediaType: 'photo' | 'video') => void; // Fotoğraf görüntülendiğinde (ephemeral için)
+  onViewed?: (messageId: string, mediaType: 'photo' | 'video') => void;
   imageUrl: string;
   messageId: string;
   mediaType?: 'photo' | 'video';
   isMine: boolean;
-  isFirstFreeView: boolean; // İlk ücretsiz hak
-  tokenCost: number;
-  userTokenBalance: number;
-  onViewWithTokens: (messageId: string) => Promise<boolean>;
-  onRequestTokens: () => void;
-  onPurchaseTokens?: () => void; // Satın alma ekranına yönlendirme
+  isFirstFreeView: boolean;
+  elmasCost: number;
+  userElmasBalance: number;
+  onViewWithElmas: (messageId: string) => Promise<boolean>;
+  onRequestElmas: () => void;
+  onPurchaseElmas?: () => void;
   senderNickname: string;
-  isInstantPhoto: boolean; // Anlık mı galeri mi
+  isInstantPhoto: boolean;
 }
 
 const PhotoViewModal: React.FC<Props> = ({
@@ -45,232 +47,339 @@ const PhotoViewModal: React.FC<Props> = ({
   mediaType = 'photo',
   isMine,
   isFirstFreeView,
-  tokenCost,
-  userTokenBalance,
-  onViewWithTokens,
-  onRequestTokens,
-  onPurchaseTokens,
+  elmasCost,
+  userElmasBalance,
+  onViewWithElmas,
+  onRequestElmas,
+  onPurchaseElmas,
   senderNickname,
   isInstantPhoto,
 }) => {
   const [isViewing, setIsViewing] = useState(false);
   const [isUnlocked, setIsUnlocked] = useState(false);
-  const [viewTimer, setViewTimer] = useState(10); // 10 saniye görüntüleme süresi
   const [loading, setLoading] = useState(false);
+  
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const scaleAnim = useRef(new Animated.Value(0.9)).current;
 
-  // İLK MEDYA İÇİN: Modal açıldığında direkt fotoğrafı göster (kilit ekranı YOK)
   useEffect(() => {
     if (visible) {
-      // Kendi fotoğrafı veya ilk ücretsiz görüntüleme ise direkt aç
-      if (isMine || isFirstFreeView) {
-        console.log('[PhotoViewModal] Auto-unlock: isMine=', isMine, 'isFirstFreeView=', isFirstFreeView);
-        setIsUnlocked(true);
-        setIsViewing(true);
-      } else {
-        // Başkasının fotoğrafı ve ücretsiz hak yok - kilit ekranı göster
-        setIsUnlocked(false);
-        setIsViewing(false);
-      }
-    } else {
-      // Modal kapandığında reset
+      Animated.parallel([
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 300,
+          useNativeDriver: true,
+        }),
+        Animated.spring(scaleAnim, {
+          toValue: 1,
+          friction: 8,
+          tension: 40,
+          useNativeDriver: true,
+        }),
+      ]).start();
+      
+      // Her zaman kilit ekranı göster - kullanıcı butona basmalı
+      // Auto-unlock kaldırıldı çünkü race condition yaratıyordu
       setIsUnlocked(false);
       setIsViewing(false);
-      setViewTimer(10);
+      console.log('[PhotoViewModal] Modal opened, showing lock screen. isMine=', isMine, 'isFirstFreeView=', isFirstFreeView);
+    } else {
+      fadeAnim.setValue(0);
+      scaleAnim.setValue(0.9);
+      setIsUnlocked(false);
+      setIsViewing(false);
     }
   }, [visible, isMine, isFirstFreeView]);
 
-  // Ekran görüntüsü engelleme - Production build'de aktif edilecek
-  // expo-screen-capture Expo Go'da çalışmıyor
-  useEffect(() => {
-    if (visible && !isMine) {
-      console.log('[PhotoViewModal] Screen capture prevention would be enabled in production');
-    }
-  }, [visible, isMine]);
-
-  // Timer KALDIRILDI - Kullanıcı istediği kadar bakabilir, kapattığında "görüntülendi" olur
-  // useEffect(() => {
-  //   let interval: NodeJS.Timeout;
-  //   if (isViewing && viewTimer > 0) {
-  //     interval = setInterval(() => {
-  //       setViewTimer((t) => {
-  //         if (t <= 1) {
-  //           handleClose();
-  //           return 0;
-  //         }
-  //         return t - 1;
-  //       });
-  //     }, 1000);
-  //   }
-  //   return () => clearInterval(interval);
-  // }, [isViewing, viewTimer]);
-
   const handleClose = () => {
-    // Eğer fotoğraf görüntülendiyse (kendi değilse) ephemeral olarak işaretle
     if (isUnlocked && !isMine) {
       console.log('[PhotoViewModal] Media was viewed, marking as ephemeral:', messageId);
       onViewed?.(messageId, mediaType);
     }
-    setIsViewing(false);
-    setIsUnlocked(false);
-    setViewTimer(10);
-    onClose();
+    
+    Animated.parallel([
+      Animated.timing(fadeAnim, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+      Animated.timing(scaleAnim, {
+        toValue: 0.9,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+    ]).start(() => {
+      setIsViewing(false);
+      setIsUnlocked(false);
+      onClose();
+    });
   };
 
   const handleViewPhoto = async () => {
-    // Kendi fotoğrafımız ise direkt göster
+    console.log('===== PhotoViewModal handleViewPhoto START =====');
+    console.log('isMine:', isMine);
+    console.log('isFirstFreeView:', isFirstFreeView);
+    console.log('userElmasBalance:', userElmasBalance);
+    console.log('elmasCost:', elmasCost);
+    console.log('messageId:', messageId);
+    
+    // Kendi medyamsa direkt aç
     if (isMine) {
+      console.log('CASE: My own photo - opening for free');
       setIsUnlocked(true);
       setIsViewing(true);
       return;
     }
 
-    // İlk ücretsiz hak varsa kullan
-    if (isFirstFreeView) {
-      setIsUnlocked(true);
-      setIsViewing(true);
-      return;
+    // İlk ücretsiz ise bakiye kontrolü yapma
+    if (!isFirstFreeView) {
+      // Ücretli medya - bakiye kontrolü
+      if (userElmasBalance < elmasCost) {
+        console.log('ERROR: Insufficient balance:', userElmasBalance, '<', elmasCost);
+        Alert.alert(
+          'Yetersiz Elmas',
+          `Bu ${mediaType === 'photo' ? 'fotoğrafı' : 'videoyu'} görmek için ${elmasCost} elmas gerekiyor.\nBakiyeniz: ${userElmasBalance}`,
+          [
+            { text: 'İptal', style: 'cancel', onPress: handleClose },
+            { 
+              text: 'Elmas Satın Al', 
+              onPress: () => {
+                handleClose();
+                onPurchaseElmas?.();
+              } 
+            },
+          ],
+        );
+        return;
+      }
     }
 
-    // Jeton kontrolü - YETERSİZSE ASLA AÇMA
-    if (userTokenBalance < tokenCost) {
-      Alert.alert(
-        'Yetersiz Jeton',
-        `Bu fotoğrafı görmek için ${tokenCost} jeton gerekiyor.\nBakiyeniz: ${userTokenBalance}`,
-        [
-          { text: 'İptal', style: 'cancel', onPress: onClose },
-          { 
-            text: 'Jeton Satın Al', 
-            onPress: () => {
-              onClose();
-              onPurchaseTokens?.();
-            } 
-          },
-        ],
-      );
-      // Bakiye yetersiz - fotoğrafı ASLA açma
-      return;
-    }
-
-    // Token harca
+    // Socket ile unlock çağır (server ücretsiz/ücretli kararı verecek)
+    console.log('Calling onViewWithElmas (socket)...');
     setLoading(true);
-    const success = await onViewWithTokens(messageId);
+    const success = await onViewWithElmas(messageId);
+    console.log('onViewWithElmas returned:', success);
     setLoading(false);
 
     if (success) {
+      console.log('SUCCESS - Unlocking photo');
       setIsUnlocked(true);
       setIsViewing(true);
+    } else {
+      console.log('FAILED - Could not unlock photo');
     }
+    console.log('===== PhotoViewModal handleViewPhoto END =====');
   };
 
   return (
     <Modal
       visible={visible}
       transparent
-      animationType="fade"
+      animationType="none"
       onRequestClose={handleClose}
     >
-      <View style={styles.overlay}>
+      <Animated.View style={[styles.overlay, { opacity: fadeAnim }]}>
         {/* Kapatma butonu */}
         <TouchableOpacity style={styles.closeButton} onPress={handleClose}>
-          <Text style={styles.closeText}>✕</Text>
+          <View style={styles.closeButtonInner}>
+            <Ionicons name="close" size={24} color={COLORS.text} />
+          </View>
         </TouchableOpacity>
 
         {isViewing && isUnlocked ? (
-          // Fotoğraf görüntüleniyor
-          <View style={styles.viewingContainer}>
-            {/* Timer KALDIRILDI - Kullanıcı kapattığında "görüntülendi" olur */}
-
+          // Medya görüntüleniyor (fotoğraf veya video)
+          <Animated.View 
+            style={[
+              styles.viewingContainer,
+              { transform: [{ scale: scaleAnim }] }
+            ]}
+          >
             {/* Tip bilgisi */}
             <View style={styles.typeBadge}>
+              <Ionicons 
+                name={mediaType === 'video' ? 'videocam' : (isInstantPhoto ? 'camera' : 'image')} 
+                size={14} 
+                color={COLORS.text} 
+              />
               <Text style={styles.typeText}>
-                {isInstantPhoto ? '📷 Anlık Fotoğraf' : '🖼️ Galeri Fotoğrafı'}
+                {mediaType === 'video' 
+                  ? 'Video' 
+                  : (isInstantPhoto ? 'Anlık Fotoğraf' : 'Galeri Fotoğrafı')}
               </Text>
             </View>
 
-            {/* Fotoğraf */}
-            <Image
-              source={{ uri: imageUrl }}
-              style={styles.fullImage}
-              resizeMode="contain"
-            />
+            {/* Video veya Fotoğraf */}
+            {mediaType === 'video' ? (
+              imageUrl ? (
+                <Video
+                  source={{ uri: imageUrl }}
+                  style={styles.fullVideo}
+                  useNativeControls
+                  resizeMode={ResizeMode.CONTAIN}
+                  shouldPlay
+                  isLooping={false}
+                />
+              ) : (
+                <View style={[styles.fullVideo, { backgroundColor: '#333' }]} />
+              )
+            ) : (
+              imageUrl ? (
+                <Image
+                  source={{ uri: imageUrl }}
+                  style={styles.fullImage}
+                  resizeMode="contain"
+                />
+              ) : (
+                <View style={[styles.fullImage, { backgroundColor: '#333' }]} />
+              )
+            )}
+
+            {/* Gönderen bilgisi */}
+            <View style={styles.senderInfo}>
+              <Ionicons name="person-circle" size={20} color={COLORS.textMuted} />
+              <Text style={styles.senderText}>{senderNickname}</Text>
+            </View>
 
             {/* Uyarı */}
-            <Text style={styles.warningText}>
-              Ekran görüntüsü almak yasaktır
-            </Text>
-          </View>
+            <View style={styles.warningContainer}>
+              <Ionicons name="shield-checkmark" size={14} color={COLORS.warning} />
+              <Text style={styles.warningText}>
+                Ekran görüntüsü koruması aktif
+              </Text>
+            </View>
+          </Animated.View>
         ) : (
           // Kilit ekranı
-          <View style={styles.lockContainer}>
+          <Animated.View 
+            style={[
+              styles.lockContainer,
+              { transform: [{ scale: scaleAnim }] }
+            ]}
+          >
             {/* Blur preview */}
-            <Image
-              source={{ uri: imageUrl }}
-              style={styles.blurImage}
-              blurRadius={30}
-            />
+            {imageUrl ? (
+              <Image
+                source={{ uri: imageUrl }}
+                style={styles.blurImage}
+                blurRadius={30}
+              />
+            ) : (
+              <View style={[styles.blurImage, { backgroundColor: '#333' }]} />
+            )}
 
-            <View style={styles.lockOverlay}>
-              <Text style={styles.lockIcon}>🔒</Text>
+            <LinearGradient
+              colors={['rgba(0,0,0,0.3)', 'rgba(0,0,0,0.8)']}
+              style={styles.lockOverlay}
+            >
+              <View style={styles.lockIconContainer}>
+                <Ionicons name="lock-closed" size={36} color={COLORS.text} />
+              </View>
+              
               <Text style={styles.lockTitle}>
-                {senderNickname} fotoğraf gönderdi
+                {senderNickname} {mediaType === 'photo' ? 'fotoğraf' : 'video'} gönderdi
               </Text>
-              <Text style={styles.lockSubtitle}>
-                {isInstantPhoto ? 'Anlık fotoğraf' : 'Galeri fotoğrafı'}
-              </Text>
+              
+              <View style={styles.lockTypeBadge}>
+                <Ionicons 
+                  name={mediaType === 'video' ? 'videocam' : (isInstantPhoto ? 'camera' : 'image')} 
+                  size={12} 
+                  color={COLORS.textSecondary} 
+                />
+                <Text style={styles.lockTypeText}>
+                  {mediaType === 'video' ? 'Video' : (isInstantPhoto ? 'Anlık' : 'Galeri')}
+                </Text>
+              </View>
 
               {isMine ? (
                 <TouchableOpacity style={styles.viewButton} onPress={handleViewPhoto}>
+                  <Ionicons name="eye" size={18} color={COLORS.text} />
                   <Text style={styles.viewButtonText}>Görüntüle</Text>
                 </TouchableOpacity>
               ) : isFirstFreeView ? (
                 <TouchableOpacity style={styles.freeButton} onPress={handleViewPhoto}>
-                  <Text style={styles.freeButtonText}>✨ Ücretsiz Aç</Text>
-                  <Text style={styles.freeNote}>İlk fotoğraf ücretsiz!</Text>
+                  <LinearGradient
+                    colors={[COLORS.success, '#27ae60']}
+                    style={styles.freeButtonGradient}
+                  >
+                    <Ionicons name="sparkles" size={18} color={COLORS.text} />
+                    <Text style={styles.freeButtonText}>Ücretsiz Aç</Text>
+                  </LinearGradient>
                 </TouchableOpacity>
               ) : loading ? (
-                <ActivityIndicator color={COLORS.primary} size="large" />
+                <View style={styles.loadingContainer}>
+                  <ActivityIndicator color={COLORS.accent} size="large" />
+                  <Text style={styles.loadingText}>Açılıyor...</Text>
+                </View>
               ) : (
                 <View style={styles.tokenSection}>
-                  <Text style={styles.tokenInfo}>
-                    Görmek için {tokenCost} jeton gerekiyor
-                  </Text>
-                  <Text style={styles.balanceInfo}>
-                    Bakiyeniz: {userTokenBalance} jeton
-                  </Text>
+                  <View style={styles.tokenInfoRow}>
+                    <Ionicons name="diamond" size={16} color={COLORS.accent} />
+                    <Text style={styles.tokenInfoText}>
+                      {elmasCost} elmas gerekiyor
+                    </Text>
+                  </View>
                   
-                  {userTokenBalance >= tokenCost ? (
+                  <View style={styles.balanceRow}>
+                    <Text style={styles.balanceLabel}>Bakiyeniz:</Text>
+                    <Text style={[
+                      styles.balanceValue,
+                      userElmasBalance < elmasCost && styles.balanceInsufficient
+                    ]}>
+                      {userElmasBalance} elmas
+                    </Text>
+                  </View>
+                  
+                  {userElmasBalance >= elmasCost ? (
                     <TouchableOpacity style={styles.payButton} onPress={handleViewPhoto}>
-                      <Text style={styles.payButtonText}>
-                        🔓 Aç ({tokenCost} jeton)
-                      </Text>
+                      <LinearGradient
+                        colors={[COLORS.primary, COLORS.primaryDark]}
+                        style={styles.payButtonGradient}
+                      >
+                        <Ionicons name="lock-open" size={18} color={COLORS.text} />
+                        <Text style={styles.payButtonText}>
+                          Aç ({elmasCost} elmas)
+                        </Text>
+                      </LinearGradient>
                     </TouchableOpacity>
                   ) : (
                     <View style={styles.insufficientContainer}>
-                      <Text style={styles.insufficientText}>
-                        ⚠️ {tokenCost - userTokenBalance} jeton daha gerekiyor
-                      </Text>
+                      <View style={styles.insufficientBadge}>
+                        <Ionicons name="alert-circle" size={14} color={COLORS.error} />
+                        <Text style={styles.insufficientText}>
+                          {elmasCost - userElmasBalance} elmas daha gerekiyor
+                        </Text>
+                      </View>
                       
-                      {onPurchaseTokens && (
-                        <TouchableOpacity style={styles.purchaseButton} onPress={onPurchaseTokens}>
-                          <Text style={styles.purchaseButtonText}>
-                            💰 Jeton Satın Al
-                          </Text>
+                      {onPurchaseElmas && (
+                        <TouchableOpacity 
+                          style={styles.purchaseButton} 
+                          onPress={() => {
+                            handleClose();
+                            onPurchaseElmas();
+                          }}
+                        >
+                          <LinearGradient
+                            colors={[COLORS.accent, COLORS.accentDark]}
+                            style={styles.purchaseButtonGradient}
+                          >
+                            <Ionicons name="diamond" size={16} color={COLORS.background} />
+                            <Text style={styles.purchaseButtonText}>Elmas Satın Al</Text>
+                          </LinearGradient>
                         </TouchableOpacity>
                       )}
                       
-                      <TouchableOpacity style={styles.requestButton} onPress={onRequestTokens}>
-                        <Text style={styles.requestButtonText}>
-                          💝 Jeton İste
-                        </Text>
+                      <TouchableOpacity style={styles.requestButton} onPress={onRequestElmas}>
+                        <Ionicons name="gift" size={16} color={COLORS.accent} />
+                        <Text style={styles.requestButtonText}>Elmas İste</Text>
                       </TouchableOpacity>
                     </View>
                   )}
                 </View>
               )}
-            </View>
-          </View>
+            </LinearGradient>
+          </Animated.View>
         )}
-      </View>
+      </Animated.View>
     </Modal>
   );
 };
@@ -287,16 +396,14 @@ const styles = StyleSheet.create({
     top: 50,
     right: 20,
     zIndex: 10,
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: COLORS.surface,
+  },
+  closeButtonInner: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  closeText: {
-    color: COLORS.text,
-    fontSize: 20,
   },
   // Görüntüleme durumu
   viewingContainer: {
@@ -304,48 +411,61 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     width: '100%',
-  },
-  timerBadge: {
-    position: 'absolute',
-    top: 60,
-    left: 20,
-    backgroundColor: COLORS.error,
-    paddingHorizontal: SPACING.md,
-    paddingVertical: SPACING.xs,
-    borderRadius: 20,
-  },
-  timerText: {
-    color: COLORS.text,
-    fontWeight: 'bold',
+    paddingHorizontal: 20,
   },
   typeBadge: {
     position: 'absolute',
     top: 60,
-    alignSelf: 'center',
-    backgroundColor: COLORS.surface,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
     paddingHorizontal: SPACING.md,
     paddingVertical: SPACING.xs,
     borderRadius: 20,
+    gap: 6,
   },
   typeText: {
     color: COLORS.text,
     fontSize: 12,
+    fontWeight: '500',
   },
   fullImage: {
     width: width - 40,
-    height: height * 0.7,
+    height: height * 0.65,
+  },
+  fullVideo: {
+    width: width - 40,
+    height: height * 0.65,
+    backgroundColor: '#000',
+    borderRadius: 12,
+  },
+  senderInfo: {
+    position: 'absolute',
+    bottom: 100,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  senderText: {
+    color: COLORS.textMuted,
+    fontSize: 14,
+  },
+  warningContainer: {
+    position: 'absolute',
+    bottom: 60,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   warningText: {
-    position: 'absolute',
-    bottom: 50,
-    color: COLORS.error,
-    fontSize: 12,
+    color: COLORS.warning,
+    fontSize: 11,
   },
   // Kilit durumu
   lockContainer: {
     width: width - 60,
-    height: height * 0.5,
-    borderRadius: 20,
+    height: height * 0.55,
+    borderRadius: 24,
     overflow: 'hidden',
   },
   blurImage: {
@@ -355,103 +475,170 @@ const styles = StyleSheet.create({
   },
   lockOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: SPACING.xl,
   },
-  lockIcon: {
-    fontSize: 48,
-    marginBottom: SPACING.md,
-  },
-  lockTitle: {
-    ...FONTS.h3,
-    color: COLORS.text,
-    textAlign: 'center',
-    marginBottom: SPACING.xs,
-  },
-  lockSubtitle: {
-    ...FONTS.body,
-    color: COLORS.textMuted,
+  lockIconContainer: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
     marginBottom: SPACING.lg,
   },
+  lockTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: COLORS.text,
+    textAlign: 'center',
+    marginBottom: SPACING.sm,
+  },
+  lockTypeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: SPACING.xl,
+  },
+  lockTypeText: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+  },
   viewButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: COLORS.primary,
     paddingHorizontal: SPACING.xl,
     paddingVertical: SPACING.md,
     borderRadius: 25,
+    gap: 8,
   },
   viewButtonText: {
     color: COLORS.text,
-    fontWeight: 'bold',
+    fontWeight: '600',
+    fontSize: 15,
   },
   freeButton: {
-    backgroundColor: COLORS.success,
+    borderRadius: 25,
+    overflow: 'hidden',
+  },
+  freeButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: SPACING.xl,
     paddingVertical: SPACING.md,
-    borderRadius: 25,
-    alignItems: 'center',
+    gap: 8,
   },
   freeButtonText: {
     color: COLORS.text,
-    fontWeight: 'bold',
-    fontSize: 16,
+    fontWeight: '600',
+    fontSize: 15,
   },
-  freeNote: {
-    color: COLORS.text,
-    fontSize: 10,
-    marginTop: 4,
-  },
-  tokenSection: {
-    alignItems: 'center',
-  },
-  tokenInfo: {
-    color: COLORS.text,
-    marginBottom: SPACING.xs,
-  },
-  balanceInfo: {
-    color: COLORS.textMuted,
-    marginBottom: SPACING.md,
-  },
-  payButton: {
-    backgroundColor: COLORS.primary,
-    paddingHorizontal: SPACING.xl,
-    paddingVertical: SPACING.md,
-    borderRadius: 25,
-  },
-  payButtonText: {
-    color: COLORS.text,
-    fontWeight: 'bold',
-  },
-  insufficientContainer: {
+  loadingContainer: {
     alignItems: 'center',
     gap: SPACING.sm,
   },
+  loadingText: {
+    color: COLORS.textMuted,
+    fontSize: 13,
+  },
+  tokenSection: {
+    alignItems: 'center',
+    width: '100%',
+  },
+  tokenInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: SPACING.sm,
+  },
+  tokenInfoText: {
+    color: COLORS.text,
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  balanceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: SPACING.lg,
+  },
+  balanceLabel: {
+    color: COLORS.textMuted,
+    fontSize: 13,
+  },
+  balanceValue: {
+    color: COLORS.text,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  balanceInsufficient: {
+    color: COLORS.error,
+  },
+  payButton: {
+    borderRadius: 25,
+    overflow: 'hidden',
+    width: '80%',
+  },
+  payButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: SPACING.md,
+    gap: 8,
+  },
+  payButtonText: {
+    color: COLORS.text,
+    fontWeight: '600',
+    fontSize: 15,
+  },
+  insufficientContainer: {
+    alignItems: 'center',
+    width: '100%',
+    gap: SPACING.md,
+  },
+  insufficientBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(248, 113, 113, 0.2)',
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.xs,
+    borderRadius: 20,
+  },
   insufficientText: {
     color: COLORS.error,
-    marginBottom: SPACING.sm,
-    textAlign: 'center',
+    fontSize: 12,
+    fontWeight: '500',
   },
   purchaseButton: {
-    backgroundColor: COLORS.success,
-    paddingHorizontal: SPACING.xl,
-    paddingVertical: SPACING.md,
     borderRadius: 25,
+    overflow: 'hidden',
+    width: '80%',
+  },
+  purchaseButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: SPACING.md,
+    gap: 8,
   },
   purchaseButtonText: {
-    color: COLORS.text,
-    fontWeight: 'bold',
+    color: COLORS.background,
+    fontWeight: '600',
+    fontSize: 15,
   },
   requestButton: {
-    marginTop: SPACING.md,
-    backgroundColor: COLORS.accent,
-    paddingHorizontal: SPACING.xl,
-    paddingVertical: SPACING.md,
-    borderRadius: 25,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: SPACING.sm,
   },
   requestButtonText: {
-    color: COLORS.text,
-    fontWeight: 'bold',
+    color: COLORS.accent,
+    fontSize: 14,
+    fontWeight: '500',
   },
 });
 

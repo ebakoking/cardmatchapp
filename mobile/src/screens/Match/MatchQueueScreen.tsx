@@ -25,11 +25,23 @@ const MatchQueueScreen: React.FC<Props> = ({ navigation }) => {
     console.log('[MatchQueue] Joining queue with userId:', user.id);
     socket.emit('match:join', { userId: user.id });
 
-    socket.on('match:found', (payload: { matchId: string; partnerNickname: string }) => {
+    socket.on('match:found', (payload: { 
+      matchId: string; 
+      partnerNickname: string; 
+      partnerAvatarId?: number;
+      commonInterests?: string[];
+      isBoostMatch?: boolean;
+    }) => {
       console.log('[MatchQueue] Match found:', payload);
       matchFoundRef.current = true; // Mark that match was found
       setSearching(false);
-      navigation.replace('CardGate', { matchId: payload.matchId });
+      navigation.replace('CardGate', { 
+        matchId: payload.matchId,
+        partnerNickname: payload.partnerNickname,
+        partnerAvatarId: payload.partnerAvatarId,
+        commonInterests: payload.commonInterests || [],
+        isBoostMatch: payload.isBoostMatch || false,
+      });
     });
 
     socket.on('match:blocked', (data: { reason: string; message: string }) => {

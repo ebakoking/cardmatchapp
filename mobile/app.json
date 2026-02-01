@@ -27,7 +27,10 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0B1020"
       },
-      "softwareKeyboardLayoutMode": "resize"
+      "softwareKeyboardLayoutMode": "resize",
+      "navigationBarColor": "#0B1020",
+      "navigationBarStyle": "dark-content",
+      "package": "com.cardmatch.app"
     },
     "plugins": [
       "expo-notifications",

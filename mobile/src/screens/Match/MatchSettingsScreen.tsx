@@ -230,7 +230,7 @@ const MatchSettingsScreen: React.FC<Props> = ({ navigation }) => {
 
       {/* Cinsiyet Filtresi - Sadece Prime */}
       <View style={[styles.section, !isPrime && styles.disabled]}>
-        <Text style={styles.sectionTitle}>👑 Cinsiyet Tercihi</Text>
+        <Text style={styles.sectionTitle}>Cinsiyet Tercihi</Text>
         <Text style={styles.genderHint}>Kiminle eşleşmek istiyorsun?</Text>
         
         {/* İlk satır: Erkek ve Kadın */}
@@ -244,7 +244,6 @@ const MatchSettingsScreen: React.FC<Props> = ({ navigation }) => {
             onPress={() => isPrime && setFilterGender('MALE')}
             disabled={!isPrime}
           >
-            <Text style={styles.genderEmoji}>👨</Text>
             <Text style={[
               styles.genderText,
               filterGender === 'MALE' && styles.genderTextActive,
@@ -260,7 +259,6 @@ const MatchSettingsScreen: React.FC<Props> = ({ navigation }) => {
             onPress={() => isPrime && setFilterGender('FEMALE')}
             disabled={!isPrime}
           >
-            <Text style={styles.genderEmoji}>👩</Text>
             <Text style={[
               styles.genderText,
               filterGender === 'FEMALE' && styles.genderTextActive,
@@ -279,7 +277,6 @@ const MatchSettingsScreen: React.FC<Props> = ({ navigation }) => {
             onPress={() => isPrime && setFilterGender('OTHER')}
             disabled={!isPrime}
           >
-            <Text style={styles.genderEmoji}>🌈</Text>
             <Text style={[
               styles.genderText,
               filterGender === 'OTHER' && styles.genderTextActive,
@@ -295,7 +292,6 @@ const MatchSettingsScreen: React.FC<Props> = ({ navigation }) => {
             onPress={() => isPrime && setFilterGender('BOTH')}
             disabled={!isPrime}
           >
-            <Text style={styles.genderEmoji}>✨</Text>
             <Text style={[
               styles.genderText,
               filterGender === 'BOTH' && styles.genderTextActive,
@@ -495,8 +491,9 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
     borderRadius: 12,
-    paddingVertical: SPACING.md,
+    paddingVertical: SPACING.lg,
     alignItems: 'center',
+    justifyContent: 'center',
     borderWidth: 2,
     borderColor: 'transparent',
   },
@@ -507,13 +504,10 @@ const styles = StyleSheet.create({
   genderOptionDisabled: {
     opacity: 0.5,
   },
-  genderEmoji: {
-    fontSize: 24,
-    marginBottom: SPACING.xs,
-  },
   genderText: {
-    ...FONTS.caption,
+    ...FONTS.body,
     color: COLORS.textMuted,
+    fontWeight: '500',
   },
   genderTextActive: {
     color: COLORS.primary,

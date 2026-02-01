@@ -87,7 +87,7 @@ export default function LeaderboardPage() {
           <div className="w-full max-w-md rounded-lg bg-surface p-6">
             <h2 className="mb-4 text-xl font-bold">Reset Leaderboard</h2>
             <p className="mb-6 text-textMuted">
-              Tüm kullanıcıların aylık jetonları sıfırlanacak. Emin misiniz?
+              Tüm kullanıcıların aylık elmasları sıfırlanacak. Emin misiniz?
             </p>
             <div className="flex gap-2">
               <button

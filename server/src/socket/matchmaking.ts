@@ -7,6 +7,7 @@ interface QueueEntry {
   joinedAt: number;
   // Prime filtreleri
   isPrime?: boolean;
+  isPlus?: boolean;
   latitude?: number | null;
   longitude?: number | null;
   filterMinAge?: number;
@@ -15,12 +16,65 @@ interface QueueEntry {
   filterGender?: string; // MALE, FEMALE, BOTH
   age?: number;
   gender?: string; // Kullanıcının kendi cinsiyeti
+  // Boost sistemi
+  isBoostActive?: boolean;
+  boostExpiresAt?: Date | null;
+  // Spark ve aktivite
+  totalSparksEarned?: number;
+  lastSeenAt?: Date | null;
+  // Interest tags
+  interests?: string[];
   filters?: {
     minAge?: number;
     maxAge?: number;
     country?: string;
     city?: string;
   };
+}
+
+// Ortak interestleri bul
+function findCommonInterests(interests1: string[], interests2: string[]): string[] {
+  if (!interests1 || !interests2) return [];
+  const set1 = new Set(interests1.map(i => i.toLowerCase().trim()));
+  return interests2.filter(i => set1.has(i.toLowerCase().trim()));
+}
+
+// Interest eşleşme skoru (0-100)
+function calculateInterestScore(interests1: string[], interests2: string[]): number {
+  const common = findCommonInterests(interests1, interests2);
+  if (common.length === 0) return 0;
+  // Her ortak interest için 20 puan, max 100
+  return Math.min(common.length * 20, 100);
+}
+
+// Kullanıcı kalite skoru hesaplama (boost eşleştirme için)
+function calculateUserQualityScore(user: {
+  isPrime?: boolean;
+  totalSparksEarned?: number;
+  verified?: boolean;
+  interests?: string[];
+}, matcherInterests?: string[]): number {
+  let score = 0;
+  
+  // Prime kullanıcılar yüksek puan
+  if (user.isPrime) score += 100;
+  
+  // Yüksek spark'lı kullanıcılar (aktif ve kaliteli kullanıcı göstergesi)
+  const sparks = user.totalSparksEarned || 0;
+  if (sparks >= 10000) score += 80;
+  else if (sparks >= 5000) score += 60;
+  else if (sparks >= 1000) score += 40;
+  else if (sparks >= 100) score += 20;
+  
+  // Doğrulanmış kullanıcılar - fake değil gerçek kişi
+  if (user.verified) score += 50;
+  
+  // Interest eşleşme skoru (0-100 arası ek puan)
+  if (matcherInterests && user.interests) {
+    score += calculateInterestScore(matcherInterests, user.interests);
+  }
+  
+  return score;
 }
 
 // Haversine formülü - iki koordinat arası mesafeyi km cinsinden hesaplar
@@ -169,10 +223,11 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
       try {
         const { userId } = payload;
 
+        // Rate limit - Development için artırıldı (dakikada 20 deneme)
         const now = Date.now();
         const attempts = lastMatchAttempt.get(userId) || [];
         const filtered = attempts.filter((t) => now - t < 60_000);
-        if (filtered.length >= 3) {
+        if (filtered.length >= 20) {
           socket.emit('error', {
             message: 'Çok hızlı! Lütfen biraz bekleyin.',
             code: 'MATCH_RATE_LIMIT',
@@ -245,6 +300,18 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
           return;
         }
 
+        // Boost durumunu kontrol et - süresi dolmuşsa deaktif et
+        let isBoostActive = (user as any).isBoostActive || false;
+        const boostExpiresAt = (user as any).boostExpiresAt;
+        if (isBoostActive && boostExpiresAt && new Date() > new Date(boostExpiresAt)) {
+          isBoostActive = false;
+          // DB'de de güncelle
+          await prisma.user.update({
+            where: { id: userId },
+            data: { isBoostActive: false },
+          });
+        }
+
         // Queue entry oluştur - filtre değerlerini logla
         const queueEntry: QueueEntry = {
           userId,
@@ -252,6 +319,7 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
           joinedAt: now,
           // Prime filtreleri
           isPrime: user.isPrime,
+          isPlus: user.isPlus,
           latitude: user.latitude,
           longitude: user.longitude,
           filterMinAge: user.filterMinAge,
@@ -260,6 +328,14 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
           filterGender: (user as any).filterGender || 'BOTH', // Prisma tipi henüz güncellenmemiş olabilir
           age: user.age,
           gender: user.gender,
+          // Boost sistemi
+          isBoostActive,
+          boostExpiresAt: boostExpiresAt ? new Date(boostExpiresAt) : null,
+          // Spark ve aktivite
+          totalSparksEarned: user.totalSparksEarned || 0,
+          lastSeenAt: user.lastSeenAt,
+          // Interest tags
+          interests: user.interests || [],
           filters: user.isPlus
             ? {
                 minAge: user.age - 5,
@@ -319,12 +395,34 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
       }
       game.answers[userId][cardId] = selectedOptionIndex;
 
-      const user1Done =
-        Object.keys(game.answers[game.user1Id] || {}).length ===
-        game.cards.length;
-      const user2Done =
-        Object.keys(game.answers[game.user2Id] || {}).length ===
-        game.cards.length;
+      // Calculate progress for both users
+      const user1Progress = Object.keys(game.answers[game.user1Id] || {}).length;
+      const user2Progress = Object.keys(game.answers[game.user2Id] || {}).length;
+      const totalCards = game.cards.length;
+
+      // Notify partner about progress
+      const partnerId = userId === game.user1Id ? game.user2Id : game.user1Id;
+      const userProgress = userId === game.user1Id ? user1Progress : user2Progress;
+      
+      // Get user nickname for the progress update
+      const answeringUser = await prisma.user.findUnique({ 
+        where: { id: userId },
+        select: { nickname: true, avatarId: true }
+      });
+      
+      io.to(partnerId).emit('partner:progress', {
+        matchId,
+        partnerId: userId,
+        partnerNickname: answeringUser?.nickname || '',
+        partnerAvatarId: answeringUser?.avatarId || 1,
+        progress: userProgress,
+        total: totalCards,
+      });
+      
+      console.log(`[Cards] Progress update: ${userId} answered ${userProgress}/${totalCards}, notifying ${partnerId}`);
+
+      const user1Done = user1Progress === totalCards;
+      const user2Done = user2Progress === totalCards;
 
       if (!user1Done || !user2Done) return;
 
@@ -638,6 +736,119 @@ async function pickCards(): Promise<CardPayload[]> {
   }));
 }
 
+// Match oluşturma helper fonksiyonu
+async function createMatch(
+  io: Server,
+  a: QueueEntry,
+  b: QueueEntry,
+  userA: any,
+  userB: any
+): Promise<void> {
+  const match = await prisma.match.create({
+    data: {
+      user1Id: userA.id,
+      user2Id: userB.id,
+    },
+  });
+
+  await prisma.matchHistory.create({
+    data: {
+      user1Id: userA.id,
+      user2Id: userB.id,
+      matchedAt: new Date(),
+    },
+  });
+
+  // Günlük sohbet sayacını artır (her iki kullanıcı için)
+  await prisma.user.updateMany({
+    where: { id: { in: [userA.id, userB.id] } },
+    data: { dailyChatsStarted: { increment: 1 } },
+  });
+
+  const cards = await pickCards();
+
+  // Card game state kaydet
+  cardGames.set(match.id, {
+    matchId: match.id,
+    user1Id: userA.id,
+    user2Id: userB.id,
+    user1SocketId: a.socketId,
+    user2SocketId: b.socketId,
+    cards,
+    answers: {},
+  });
+
+  console.log(`[Matchmaking] ========== MATCH FOUND ==========`);
+  console.log(`[Matchmaking] Match ID: ${match.id}`);
+  console.log(`[Matchmaking] User1: ${userA.nickname} (${userA.id}), socket: ${a.socketId}, boost: ${a.isBoostActive}`);
+  console.log(`[Matchmaking] User2: ${userB.nickname} (${userB.id}), socket: ${b.socketId}, boost: ${b.isBoostActive}`);
+  console.log(`[Matchmaking] Cards count: ${cards.length}`);
+
+  // Socket'leri userId odalarına join et (güvenlik için tekrar)
+  const socketA = io.sockets.sockets.get(a.socketId);
+  const socketB = io.sockets.sockets.get(b.socketId);
+  
+  if (socketA) {
+    socketA.join(userA.id);
+    console.log(`[Matchmaking] Socket A (${a.socketId}) joined room ${userA.id}`);
+  } else {
+    console.log(`[Matchmaking] WARNING: Socket A not found for ${a.socketId}`);
+  }
+  
+  if (socketB) {
+    socketB.join(userB.id);
+    console.log(`[Matchmaking] Socket B (${b.socketId}) joined room ${userB.id}`);
+  } else {
+    console.log(`[Matchmaking] WARNING: Socket B not found for ${b.socketId}`);
+  }
+
+  // Ortak interestleri bul
+  const commonInterests = findCommonInterests(a.interests || [], b.interests || []);
+  console.log(`[Matchmaking] Common interests: ${commonInterests.length > 0 ? commonInterests.join(', ') : 'none'}`);
+
+  // match:found emit - hem room'a hem direkt socket'e
+  const matchFoundPayloadA = { 
+    matchId: match.id, 
+    partnerNickname: userB.nickname,
+    partnerAvatarId: userB.avatarId || 1,
+    isBoostMatch: a.isBoostActive || b.isBoostActive,
+    commonInterests, // Ortak ilgi alanları
+  };
+  const matchFoundPayloadB = { 
+    matchId: match.id, 
+    partnerNickname: userA.nickname,
+    partnerAvatarId: userA.avatarId || 1,
+    isBoostMatch: a.isBoostActive || b.isBoostActive,
+    commonInterests, // Ortak ilgi alanları
+  };
+  
+  // Room'a emit
+  io.to(userA.id).emit('match:found', matchFoundPayloadA);
+  io.to(userB.id).emit('match:found', matchFoundPayloadB);
+  
+  // Direkt socket'e de emit (backup)
+  socketA?.emit('match:found', matchFoundPayloadA);
+  socketB?.emit('match:found', matchFoundPayloadB);
+
+  console.log('[Matchmaking] match:found emitted to both users');
+  console.log('[Matchmaking] Cards will be delivered via cards:request handshake (pull-based)');
+
+  // Kuyruktan çıkar
+  const idxA = matchmakingQueue.findIndex(q => q.userId === a.userId);
+  const idxB = matchmakingQueue.findIndex(q => q.userId === b.userId);
+  
+  // Büyük index'i önce sil (index kayması önleme)
+  if (idxA > idxB) {
+    if (idxA >= 0) matchmakingQueue.splice(idxA, 1);
+    if (idxB >= 0) matchmakingQueue.splice(idxB, 1);
+  } else {
+    if (idxB >= 0) matchmakingQueue.splice(idxB, 1);
+    if (idxA >= 0) matchmakingQueue.splice(idxA, 1);
+  }
+  
+  console.log('[Matchmaking] Users removed from queue, new size:', matchmakingQueue.length);
+}
+
 async function tryMatch(io: Server) {
   console.log('[Matchmaking] tryMatch called, queue size:', matchmakingQueue.length);
   
@@ -646,8 +857,77 @@ async function tryMatch(io: Server) {
     return;
   }
 
-  console.log('[Matchmaking] Queue users:', matchmakingQueue.map(q => q.userId));
+  console.log('[Matchmaking] Queue users:', matchmakingQueue.map(q => ({ 
+    userId: q.userId, 
+    isBoostActive: q.isBoostActive,
+    totalSparks: q.totalSparksEarned 
+  })));
 
+  // Boost aktif kullanıcıları önceliklendir
+  const boostUsers = matchmakingQueue.filter(q => q.isBoostActive);
+  const normalUsers = matchmakingQueue.filter(q => !q.isBoostActive);
+  
+  console.log(`[Matchmaking] Boost users: ${boostUsers.length}, Normal users: ${normalUsers.length}`);
+
+  // Boost kullanıcıları için özel eşleştirme
+  for (const boostUser of boostUsers) {
+    // Potansiyel eşleşmeleri kalite skoruna göre sırala
+    const candidates: Array<{ entry: QueueEntry; score: number }> = [];
+    
+    for (const candidate of matchmakingQueue) {
+      if (candidate.userId === boostUser.userId) continue;
+      
+      const userA = await prisma.user.findUnique({ where: { id: boostUser.userId } });
+      const userB = await prisma.user.findUnique({ where: { id: candidate.userId } });
+      if (!userA || !userB) continue;
+      
+      // Block kontrolü
+      const blockExists = await prisma.block.findFirst({
+        where: {
+          OR: [
+            { blockerUserId: userA.id, blockedUserId: userB.id },
+            { blockerUserId: userB.id, blockedUserId: userA.id },
+          ],
+        },
+      });
+      if (blockExists) continue;
+      
+      // Prime filtre kontrolü
+      if (!canMatchWithFilters(boostUser, candidate)) continue;
+      
+      // Kalite skoru hesapla (interest eşleşmesi dahil)
+      const score = calculateUserQualityScore({
+        isPrime: candidate.isPrime,
+        totalSparksEarned: candidate.totalSparksEarned,
+        verified: userB.verified,
+        interests: candidate.interests,
+      }, boostUser.interests);
+      
+      candidates.push({ entry: candidate, score });
+    }
+    
+    // En yüksek skorlu adayı seç
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => b.score - a.score);
+      
+      // Weighted random: top 3'ten rastgele seç (daha çeşitli eşleşme için)
+      const topCandidates = candidates.slice(0, Math.min(3, candidates.length));
+      const selectedCandidate = topCandidates[Math.floor(Math.random() * topCandidates.length)];
+      
+      console.log(`[Matchmaking] Boost match found! ${boostUser.userId} <-> ${selectedCandidate.entry.userId} (score: ${selectedCandidate.score})`);
+      
+      // Eşleşmeyi gerçekleştir
+      const userA = await prisma.user.findUnique({ where: { id: boostUser.userId } });
+      const userB = await prisma.user.findUnique({ where: { id: selectedCandidate.entry.userId } });
+      
+      if (userA && userB) {
+        await createMatch(io, boostUser, selectedCandidate.entry, userA, userB);
+        return;
+      }
+    }
+  }
+
+  // Normal eşleştirme algoritması
   for (let i = 0; i < matchmakingQueue.length; i++) {
     for (let j = i + 1; j < matchmakingQueue.length; j++) {
       const a = matchmakingQueue[i];
@@ -686,83 +966,8 @@ async function tryMatch(io: Server) {
         continue;
       }
 
-      const match = await prisma.match.create({
-        data: {
-          user1Id: userA.id,
-          user2Id: userB.id,
-        },
-      });
-
-      await prisma.matchHistory.create({
-        data: {
-          user1Id: userA.id,
-          user2Id: userB.id,
-          matchedAt: new Date(),
-        },
-      });
-
-      // Günlük sohbet sayacını artır (her iki kullanıcı için)
-      await prisma.user.updateMany({
-        where: { id: { in: [userA.id, userB.id] } },
-        data: { dailyChatsStarted: { increment: 1 } },
-      });
-
-      const cards = await pickCards();
-
-      // Card game state kaydet
-      cardGames.set(match.id, {
-        matchId: match.id,
-        user1Id: userA.id,
-        user2Id: userB.id,
-        user1SocketId: a.socketId,
-        user2SocketId: b.socketId,
-        cards,
-        answers: {},
-      });
-
-      console.log(`[Matchmaking] ========== MATCH FOUND ==========`);
-      console.log(`[Matchmaking] Match ID: ${match.id}`);
-      console.log(`[Matchmaking] User1: ${userA.nickname} (${userA.id}), socket: ${a.socketId}`);
-      console.log(`[Matchmaking] User2: ${userB.nickname} (${userB.id}), socket: ${b.socketId}`);
-      console.log(`[Matchmaking] Cards count: ${cards.length}`);
-
-      // Socket'leri userId odalarına join et (güvenlik için tekrar)
-      const socketA = io.sockets.sockets.get(a.socketId);
-      const socketB = io.sockets.sockets.get(b.socketId);
-      
-      if (socketA) {
-        socketA.join(userA.id);
-        console.log(`[Matchmaking] Socket A (${a.socketId}) joined room ${userA.id}`);
-      } else {
-        console.log(`[Matchmaking] WARNING: Socket A not found for ${a.socketId}`);
-      }
-      
-      if (socketB) {
-        socketB.join(userB.id);
-        console.log(`[Matchmaking] Socket B (${b.socketId}) joined room ${userB.id}`);
-      } else {
-        console.log(`[Matchmaking] WARNING: Socket B not found for ${b.socketId}`);
-      }
-
-      // match:found emit - hem room'a hem direkt socket'e
-      const matchFoundPayloadA = { matchId: match.id, partnerNickname: userB.nickname };
-      const matchFoundPayloadB = { matchId: match.id, partnerNickname: userA.nickname };
-      
-      // Room'a emit
-      io.to(userA.id).emit('match:found', matchFoundPayloadA);
-      io.to(userB.id).emit('match:found', matchFoundPayloadB);
-      
-      // Direkt socket'e de emit (backup)
-      socketA?.emit('match:found', matchFoundPayloadA);
-      socketB?.emit('match:found', matchFoundPayloadB);
-
-      console.log('[Matchmaking] match:found emitted to both users');
-      console.log('[Matchmaking] Cards will be delivered via cards:request handshake (pull-based)');
-
-      matchmakingQueue.splice(j, 1);
-      matchmakingQueue.splice(i, 1);
-      
-      console.log('[Matchmaking] Users removed from queue, new size:', matchmakingQueue.length);
+      // Normal eşleşme bulundu - createMatch helper'ı kullan
+      await createMatch(io, a, b, userA, userB);
       return;
     }
   }

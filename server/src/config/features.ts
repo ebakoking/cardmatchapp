@@ -11,18 +11,18 @@ export const FEATURES = {
   // ============================================
   
   /**
-   * Jeton hediye sistemi aktif mi?
-   * false = Tüm jeton transferleri devre dışı
+   * Elmas hediye sistemi aktif mi?
+   * false = Tüm elmas transferleri devre dışı
    * 
    * UYARI: Bakım/debug için false yapılabilir.
    * Production'da true olmalı.
    */
-  TOKEN_GIFT_ENABLED: false, // 🔴 ACİL: Şu an KAPALI
+  TOKEN_GIFT_ENABLED: true, // ✅ AKTİF
   
   /**
-   * Kullanıcıya gösterilecek bakım mesajı
+   * Kullanıcıya gösterilecek bakım mesajı (sistem kapalıyken)
    */
-  TOKEN_GIFT_DISABLED_MESSAGE: 'Jeton hediye sistemi geçici olarak bakımdadır. Lütfen daha sonra tekrar deneyin.',
+  TOKEN_GIFT_DISABLED_MESSAGE: 'Elmas hediye sistemi şu an bakımda. Lütfen daha sonra tekrar deneyin.',
   
   // ============================================
   // DİĞER ÖZELLİKLER
@@ -52,7 +52,7 @@ export const METRICS = {
 };
 
 /**
- * Jeton hediye isteğini logla
+ * Elmas hediye isteğini logla
  */
 export function logTokenGiftAttempt(blocked: boolean = false) {
   METRICS.tokenGiftAttempts++;

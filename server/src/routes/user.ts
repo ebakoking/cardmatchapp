@@ -1,5 +1,8 @@
 import { Router } from 'express';
 import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 import { prisma } from '../prisma';
 import { validateBody } from '../utils/validation';
@@ -8,7 +11,36 @@ import { saveVerificationVideo } from '../services/verification';
 import { emitToUser } from '../socket/io';
 
 const router = Router();
-const upload = multer();
+
+// Uploads klasörünü oluştur
+const uploadsDir = path.join(__dirname, '../../uploads/profile-photos');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Multer disk storage config - fotoğrafları gerçekten kaydet
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname) || '.jpg';
+    const uniqueName = `${uuidv4()}${ext}`;
+    cb(null, uniqueName);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Sadece görsel dosyalar kabul edilir'));
+    }
+  },
+});
 
 function authMiddleware(req: any, res: any, next: any) {
   const authHeader = req.headers.authorization;
@@ -39,6 +71,9 @@ const updateProfileSchema = z.object({
   bio: z.string().max(150).optional().nullable(),
   city: z.string().min(1).optional(),
   country: z.string().min(1).optional(),
+  // Avatar ve ilgi alanları
+  avatarId: z.number().int().min(1).max(8).optional(),
+  interests: z.array(z.string().max(30)).max(10).optional(),
   // Prime filtre ayarları
   filterMinAge: z.number().int().min(18).max(99).optional(),
   filterMaxAge: z.number().int().min(18).max(99).optional(),
@@ -167,7 +202,14 @@ router.post('/logout', authMiddleware, async (req: any, res) => {
   }
 });
 
-// Profile photo upload (simple local/S3 URL)
+// ============ FOTOĞRAF YÖNETİMİ ============
+// Limitler
+const MAX_CORE_PHOTOS = 6;
+const MAX_DAILY_PHOTOS_PER_DAY = 4; // Günde 4 adet
+const CORE_UNLOCK_COST = 5;
+const DAILY_UNLOCK_COST = 3;
+
+// Profile photo upload (core veya daily)
 router.post(
   '/me/photos',
   authMiddleware,
@@ -181,21 +223,74 @@ router.post(
     }
 
     const userId = req.user.userId as string;
-
-    const count = await prisma.photo.count({ where: { userId } });
-    if (count >= 6) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'MAX_PHOTOS',
-          message: 'En fazla 6 fotoğraf yükleyebilirsiniz.',
+    const photoType = req.body.type === 'DAILY' ? 'DAILY' : 'CORE';
+    
+    console.log('[PhotoUpload] Request received:', {
+      userId,
+      photoType,
+      bodyType: req.body.type,
+      hasFile: !!req.file,
+      caption: req.body.caption?.substring(0, 20),
+    });
+    
+    // Core photos için max 6 kontrolü
+    if (photoType === 'CORE') {
+      const coreCount = await prisma.photo.count({ 
+        where: { userId, type: 'CORE' } 
+      });
+      if (coreCount >= MAX_CORE_PHOTOS) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'MAX_CORE_PHOTOS',
+            message: `En fazla ${MAX_CORE_PHOTOS} profil fotoğrafı yükleyebilirsiniz.`,
+          },
+        });
+      }
+    }
+    
+    // Daily photos için günde max 3 kontrolü
+    if (photoType === 'DAILY') {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      
+      const dailyCount = await prisma.photo.count({
+        where: {
+          userId,
+          type: 'DAILY',
+          createdAt: {
+            gte: today,
+            lt: tomorrow,
+          },
         },
       });
+      
+      if (dailyCount >= MAX_DAILY_PHOTOS_PER_DAY) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'MAX_DAILY_PHOTOS',
+            message: `Bugün için ${MAX_DAILY_PHOTOS_PER_DAY} günlük fotoğraf limitine ulaştınız.`,
+          },
+        });
+      }
     }
 
-    // For MVP, we store a local path; S3 integration can reuse verification service as needed.
-    const key = `profile-photos/${userId}-${Date.now()}.jpg`;
-    const url = `/uploads/${key}`;
+    // Get count for order (type bazlı)
+    const count = await prisma.photo.count({ 
+      where: { userId, type: photoType } 
+    });
+
+    // Dosya kaydedildi, URL'i oluştur
+    const url = `/uploads/profile-photos/${req.file.filename}`;
+    
+    console.log('[PhotoUpload] File saved:', {
+      filename: req.file.filename,
+      path: req.file.path,
+      url,
+    });
     
     // Caption from form data (optional, max 80 chars)
     const caption = req.body.caption?.slice(0, 80) || null;
@@ -205,11 +300,27 @@ router.post(
         userId,
         url,
         order: count + 1,
+        type: photoType,
         caption,
       },
     });
 
-    return res.json({ success: true, data: photo });
+    console.log('[PhotoUpload] Photo created:', {
+      photoId: photo.id,
+      userId,
+      photoType: photo.type,
+      order: photo.order,
+    });
+
+    return res.json({ 
+      success: true, 
+      data: photo,
+      limits: {
+        type: photoType,
+        current: count + 1,
+        max: photoType === 'CORE' ? MAX_CORE_PHOTOS : MAX_DAILY_PHOTOS_PER_DAY,
+      },
+    });
   },
 );
 
@@ -250,6 +361,170 @@ router.patch('/me/photos/:photoId/caption', authMiddleware, async (req: any, res
     data: updatedPhoto,
   });
 });
+
+// ============ PROFİL FOTOĞRAFI (Prime) ============
+// Prime kullanıcılar için özel profil fotoğrafı yükleme
+router.post(
+  '/me/profile-photo',
+  authMiddleware,
+  upload.single('photo'),
+  async (req: any, res) => {
+    const userId = req.user.userId;
+    
+    // Prime kontrolü
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user?.isPrime) {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'NOT_PRIME', message: 'Bu özellik sadece Prime üyelere açıktır.' },
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'NO_FILE', message: 'Fotoğraf yüklenmedi.' },
+      });
+    }
+
+    // Dosya URL'i
+    const profilePhotoUrl = `/uploads/profile-photos/${req.file.filename}`;
+
+    // Kullanıcının profil fotoğrafını güncelle
+    await prisma.user.update({
+      where: { id: userId },
+      data: { profilePhotoUrl },
+    });
+
+    console.log('[ProfilePhoto] Uploaded for Prime user:', { userId, profilePhotoUrl });
+
+    return res.json({
+      success: true,
+      data: { profilePhotoUrl },
+    });
+  }
+);
+
+// Prime profil fotoğrafını kaldır
+router.delete('/me/profile-photo', authMiddleware, async (req: any, res) => {
+  const userId = req.user.userId;
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: { profilePhotoUrl: null },
+  });
+
+  console.log('[ProfilePhoto] Removed for user:', userId);
+
+  return res.json({
+    success: true,
+    message: 'Profil fotoğrafı kaldırıldı.',
+  });
+});
+
+// ============ FOTOĞRAF SİLME ============
+router.delete('/me/photos/:photoId', authMiddleware, async (req: any, res) => {
+  const userId = req.user.userId;
+  const { photoId } = req.params;
+  
+  // Check photo ownership
+  const photo = await prisma.photo.findFirst({
+    where: { id: photoId, userId },
+  });
+  
+  if (!photo) {
+    return res.status(404).json({
+      success: false,
+      error: { code: 'NOT_FOUND', message: 'Fotoğraf bulunamadı.' },
+    });
+  }
+  
+  // Delete photo (PhotoUnlock cascade olarak silinir)
+  // SparkTransaction silinmez (audit kaydı)
+  await prisma.photo.delete({
+    where: { id: photoId },
+  });
+  
+  // Re-order remaining photos
+  await prisma.photo.updateMany({
+    where: {
+      userId,
+      type: photo.type,
+      order: { gt: photo.order },
+    },
+    data: {
+      order: { decrement: 1 },
+    },
+  });
+  
+  return res.json({
+    success: true,
+    message: 'Fotoğraf silindi.',
+  });
+});
+
+// ============ FOTOĞRAF DEĞİŞTİRME (Replace) ============
+router.put(
+  '/me/photos/:photoId',
+  authMiddleware,
+  upload.single('photo'),
+  async (req: any, res) => {
+    const userId = req.user.userId;
+    const { photoId } = req.params;
+    
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'NO_FILE', message: 'Fotoğraf yüklenmedi' },
+      });
+    }
+    
+    // Check photo ownership
+    const existingPhoto = await prisma.photo.findFirst({
+      where: { id: photoId, userId },
+    });
+    
+    if (!existingPhoto) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Fotoğraf bulunamadı.' },
+      });
+    }
+    
+    // Gerçek dosya URL'i (multer disk storage'dan)
+    const newUrl = `/uploads/profile-photos/${req.file.filename}`;
+    
+    console.log('[PhotoReplace] Replacing photo:', {
+      photoId,
+      oldUrl: existingPhoto.url,
+      newUrl,
+      filename: req.file.filename,
+    });
+    
+    // Fotoğraf değiştirildiğinde unlock kayıtlarını SİL
+    // Böylece arkadaşlar yeni fotoğrafı tekrar açmak zorunda kalır
+    await prisma.photoUnlock.deleteMany({
+      where: { photoId },
+    });
+    
+    // Update photo URL
+    const updatedPhoto = await prisma.photo.update({
+      where: { id: photoId },
+      data: {
+        url: newUrl,
+        // Caption korunur
+      },
+    });
+    
+    console.log('[PhotoReplace] Photo replaced, unlock records deleted');
+    
+    return res.json({
+      success: true,
+      data: updatedPhoto,
+      message: 'Fotoğraf değiştirildi.',
+    });
+  }
+);
 
 // Verification video upload
 router.post(
@@ -374,12 +649,17 @@ router.get('/friends', authMiddleware, async (req: any, res) => {
       }
     }
 
+    // Prime kullanıcılar için profilePhotoUrl öncelikli, yoksa ilk fotoğraf
+    const profilePhoto = friend.isPrime && friend.profilePhotoUrl 
+      ? friend.profilePhotoUrl 
+      : friend.profilePhotos[0]?.url || null;
+
     friendsMap.set(friend.id, {
       friendshipId: f.id,
       id: friend.id,
       nickname: friend.nickname,
       avatarId: friend.avatarId,
-      profilePhoto: friend.profilePhotos[0]?.url,
+      profilePhoto,
       isOnline: friend.isOnline,
       isPrime: friend.isPrime,
       lastSeenAt: friend.lastSeenAt,
@@ -421,6 +701,7 @@ router.get('/friend-requests', authMiddleware, async (req: any, res) => {
           id: true,
           nickname: true,
           avatarId: true,
+          profilePhotoUrl: true,
           profilePhotos: true,
           isPrime: true,
         },
@@ -434,7 +715,9 @@ router.get('/friend-requests', authMiddleware, async (req: any, res) => {
     fromUserId: r.fromUserId,
     nickname: r.fromUser.nickname,
     avatarId: r.fromUser.avatarId,
-    profilePhoto: r.fromUser.profilePhotos[0]?.url,
+    profilePhoto: r.fromUser.isPrime && r.fromUser.profilePhotoUrl 
+      ? r.fromUser.profilePhotoUrl 
+      : r.fromUser.profilePhotos[0]?.url || null,
     isPrime: r.fromUser.isPrime,
     createdAt: r.createdAt,
   }));
@@ -731,6 +1014,9 @@ router.get('/friends/:friendshipId/messages', authMiddleware, async (req: any, r
     content: m.content,
     mediaUrl: m.mediaUrl,
     mediaType: m.mediaType,
+    locked: m.locked,
+    isFirstFree: m.isFirstFree,
+    mediaPrice: m.mediaPrice,
     createdAt: m.createdAt,
   }));
 
@@ -823,8 +1109,29 @@ router.get('/friends/:friendId/profile', authMiddleware, async (req: any, res) =
   });
   const unlockedPhotoIds = new Set(unlockedPhotos.map((u) => u.photoId));
 
+  // Fotoğrafları type'a göre grupla
+  const corePhotos = friend.profilePhotos.filter((p) => p.type === 'CORE');
+  const dailyPhotos = friend.profilePhotos.filter((p) => p.type === 'DAILY');
+
+  // Helper function for photo mapping
+  const mapPhoto = (p: typeof friend.profilePhotos[0]) => {
+    const isUnlocked = unlockedPhotoIds.has(p.id);
+    const unlockCost = p.type === 'CORE' ? CORE_UNLOCK_COST : DAILY_UNLOCK_COST;
+    return {
+      id: p.id,
+      url: p.url,
+      order: p.order,
+      type: p.type,
+      // Caption sadece unlock edilmişse görünür
+      caption: isUnlocked ? p.caption : null,
+      hasCaption: !!p.caption,
+      isUnlocked,
+      unlockCost,
+      createdAt: p.createdAt,
+    };
+  };
+
   // Arkadaş olduğu için detayları göster
-  // Caption sadece fotoğraf açılmışsa gösterilir
   return res.json({
     success: true,
     data: {
@@ -832,35 +1139,39 @@ router.get('/friends/:friendId/profile', authMiddleware, async (req: any, res) =
       nickname: friend.nickname,
       bio: friend.bio,
       avatarId: friend.avatarId,
+      // Prime profil fotoğrafı (Prime üyeler için)
+      profilePhotoUrl: friend.isPrime ? friend.profilePhotoUrl : null,
       isPrime: friend.isPrime,
       isOnline: friend.isOnline,
       verified: friend.verified,
       lastSeenAt: friend.lastSeenAt,
-      isFriend: true, // Arkadaşlık durumu
-      profilePhotos: friend.profilePhotos.map((p) => {
-        const isUnlocked = unlockedPhotoIds.has(p.id);
-        return {
-          id: p.id,
-          url: p.url,
-          order: p.order,
-          // Caption sadece unlock edilmişse görünür
-          caption: isUnlocked ? p.caption : null,
-          hasCaption: !!p.caption, // Kullanıcı caption olduğunu bilsin ama içeriği görmez
-          isUnlocked,
-        };
-      }),
+      isFriend: true,
+      // Core ve Daily fotoğraflar ayrı ayrı
+      corePhotos: corePhotos.map(mapPhoto),
+      dailyPhotos: dailyPhotos.map(mapPhoto),
+      // Geriye uyumluluk için tüm fotoğraflar
+      profilePhotos: friend.profilePhotos.map(mapPhoto),
       friendshipId: friendship.id,
       friendsSince: friendship.createdAt,
       // Spark bilgileri
       monthlySparksEarned: friend.monthlySparksEarned,
       totalSparksEarned: friend.totalSparksEarned,
+      // Unlock maliyetleri
+      unlockCosts: {
+        core: CORE_UNLOCK_COST,
+        daily: DAILY_UNLOCK_COST,
+      },
     },
   });
 });
 
 // ============ FOTOĞRAF AÇMA (UNLOCK) ============
-const PHOTO_UNLOCK_COST = 5; // Fotoğraf açma maliyeti (jeton)
-const SPARK_REWARD_RATIO = 1.0; // Harcanan jetonun %100'ü spark olarak sahibine gider
+const SPARK_REWARD_RATIO = 1.0; // Harcanan elmasın %100'ü spark olarak sahibine gider
+
+// Helper: Fotoğraf tipine göre unlock maliyeti
+function getUnlockCost(photoType: 'CORE' | 'DAILY'): number {
+  return photoType === 'CORE' ? CORE_UNLOCK_COST : DAILY_UNLOCK_COST;
+}
 
 router.post('/photos/:photoId/unlock', authMiddleware, async (req: any, res) => {
   const viewerId = req.user.userId;
@@ -884,10 +1195,14 @@ router.post('/photos/:photoId/unlock', authMiddleware, async (req: any, res) => 
     }
 
     const ownerId = photo.userId;
+    const unlockCost = getUnlockCost(photo.type);
+    
     console.log('[PhotoUnlock] Roles identified:', { 
       viewerId, 
       ownerId, 
-      viewerIsOwner: viewerId === ownerId 
+      viewerIsOwner: viewerId === ownerId,
+      photoType: photo.type,
+      unlockCost,
     });
 
     // 2. Kendi fotoğrafını açmaya çalışıyorsa izin ver (ücretsiz)
@@ -972,25 +1287,26 @@ router.post('/photos/:photoId/unlock', authMiddleware, async (req: any, res) => 
       select: { tokenBalance: true },
     });
 
-    if (!viewer || viewer.tokenBalance < PHOTO_UNLOCK_COST) {
+    if (!viewer || viewer.tokenBalance < unlockCost) {
       return res.status(402).json({
         success: false,
         error: { 
           code: 'INSUFFICIENT_BALANCE', 
-          message: 'Yeterli jetonun yok.',
-          required: PHOTO_UNLOCK_COST,
+          message: 'Yeterli elmasın yok.',
+          required: unlockCost,
           current: viewer?.tokenBalance || 0,
         },
       });
     }
 
-    // 6. Transaction: Jeton düş, spark ekle, unlock kaydet
-    const sparkAmount = Math.floor(PHOTO_UNLOCK_COST * SPARK_REWARD_RATIO);
+    // 6. Transaction: Elmas düş, spark ekle, unlock kaydet
+    const sparkAmount = Math.floor(unlockCost * SPARK_REWARD_RATIO);
 
     console.log('[PhotoUnlock] Executing transaction:', {
       chargedUserId: viewerId,
       ownerUserId: ownerId,
-      cost: PHOTO_UNLOCK_COST,
+      cost: unlockCost,
+      photoType: photo.type,
       sparkAmount,
     });
 
@@ -998,7 +1314,7 @@ router.post('/photos/:photoId/unlock', authMiddleware, async (req: any, res) => 
       // Görüntüleyenin bakiyesini düşür
       prisma.user.update({
         where: { id: viewerId },
-        data: { tokenBalance: { decrement: PHOTO_UNLOCK_COST } },
+        data: { tokenBalance: { decrement: unlockCost } },
       }),
       // Fotoğraf sahibine spark ekle
       prisma.user.update({
@@ -1014,7 +1330,7 @@ router.post('/photos/:photoId/unlock', authMiddleware, async (req: any, res) => 
           photoId,
           viewerId,
           ownerId,
-          tokenCost: PHOTO_UNLOCK_COST,
+          tokenCost: unlockCost,
           sparkAmount,
         },
       }),
@@ -1059,9 +1375,10 @@ router.post('/photos/:photoId/unlock', authMiddleware, async (req: any, res) => 
         id: photo.id,
         url: photo.url,
         caption: photo.caption,
+        type: photo.type,
         isUnlocked: true,
       },
-      cost: PHOTO_UNLOCK_COST,
+      cost: unlockCost,
       sparkAwarded: sparkAmount,
       newBalance: updatedViewer?.tokenBalance || 0,
       message: 'Fotoğraf açıldı!',
@@ -1072,7 +1389,8 @@ router.post('/photos/:photoId/unlock', authMiddleware, async (req: any, res) => 
       responseData._debug = {
         chargedUserId: viewerId,
         ownerUserId: ownerId,
-        amount: PHOTO_UNLOCK_COST,
+        amount: unlockCost,
+        photoType: photo.type,
         alreadyUnlocked: false,
       };
     }
@@ -1090,14 +1408,111 @@ router.post('/photos/:photoId/unlock', authMiddleware, async (req: any, res) => 
   }
 });
 
-// ============ FOTOĞRAF AÇMA MALİYETİ ============
+// ============ FOTOĞRAF AÇMA MALİYETLERİ ============
 router.get('/photos/unlock-cost', authMiddleware, async (req: any, res) => {
   return res.json({
     success: true,
     data: {
-      cost: PHOTO_UNLOCK_COST,
+      core: CORE_UNLOCK_COST,
+      daily: DAILY_UNLOCK_COST,
     },
   });
+});
+
+// ============ HESAP DONDURMA / SİLME ============
+/**
+ * POST /api/user/me/freeze-account
+ * Hesabı dondurur - veriler silinmez, sadece görünmez olur
+ * Aynı telefon numarası ile tekrar giriş yapınca hesap aktifleşir
+ */
+router.post('/me/freeze-account', authMiddleware, async (req: any, res) => {
+  const userId = req.user.userId;
+  
+  console.log('[Account] Freezing account for user:', userId);
+  
+  try {
+    // Hesabı dondur
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        status: 'FROZEN',
+        frozenAt: new Date(),
+        isOnline: false,
+        refreshToken: null,
+        refreshTokenExp: null,
+      },
+    });
+    
+    // Tüm arkadaşlıklardaki görünürlüğü kaldır (arkadaşlar listesinden gizle)
+    // Not: Arkadaşlıklar silinmez, hesap aktifleşince geri gelir
+    
+    console.log('[Account] Account frozen successfully:', userId);
+    
+    return res.json({
+      success: true,
+      message: 'Hesabın donduruldu. Aynı telefon numarası ile tekrar giriş yaparak hesabını aktifleştirebilirsin.',
+    });
+  } catch (error) {
+    console.error('[Account] Freeze error:', error);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: 'Bir hata oluştu.' },
+    });
+  }
+});
+
+/**
+ * POST /api/user/me/reactivate-account
+ * Dondurulmuş hesabı tekrar aktifleştirir (login sırasında otomatik çağrılır)
+ */
+router.post('/me/reactivate-account', authMiddleware, async (req: any, res) => {
+  const userId = req.user.userId;
+  
+  console.log('[Account] Reactivating account for user:', userId);
+  
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Kullanıcı bulunamadı.' },
+      });
+    }
+    
+    if (user.status !== 'FROZEN') {
+      return res.json({
+        success: true,
+        message: 'Hesap zaten aktif.',
+        wasReactivated: false,
+      });
+    }
+    
+    // Hesabı aktifleştir
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        status: 'ACTIVE',
+        frozenAt: null,
+      },
+    });
+    
+    console.log('[Account] Account reactivated successfully:', userId);
+    
+    return res.json({
+      success: true,
+      message: 'Hesabın tekrar aktifleştirildi! Hoş geldin.',
+      wasReactivated: true,
+    });
+  } catch (error) {
+    console.error('[Account] Reactivate error:', error);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: 'Bir hata oluştu.' },
+    });
+  }
 });
 
 export default router;

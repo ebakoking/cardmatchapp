@@ -9,9 +9,12 @@ import {
   Dimensions,
   PanResponder,
   Alert,
+  Platform,
+  StatusBar,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { COLORS } from '../theme/colors';
 import { FONTS } from '../theme/fonts';
@@ -36,6 +39,7 @@ const COLORS_PALETTE = ['#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF', '
 const STROKE_WIDTHS = [2, 4, 8, 12];
 
 const PhotoEditor: React.FC<Props> = ({ visible, imageUri, onClose, onSave }) => {
+  const insets = useSafeAreaInsets();
   const [editMode, setEditMode] = useState<'crop' | 'draw' | null>(null);
   const [paths, setPaths] = useState<DrawPath[]>([]);
   const [currentPath, setCurrentPath] = useState<DrawPath | null>(null);
@@ -46,6 +50,10 @@ const PhotoEditor: React.FC<Props> = ({ visible, imageUri, onClose, onSave }) =>
 
   // Crop state
   const [cropArea, setCropArea] = useState({ x: 50, y: 50, width: 200, height: 200 });
+
+  // Safe area hesaplama
+  const topInset = insets.top || (Platform.OS === 'android' ? StatusBar.currentHeight || 24 : 44);
+  const bottomInset = insets.bottom || (Platform.OS === 'android' ? 24 : 34);
 
   // Drawing pan responder
   const panResponder = useRef(
@@ -81,17 +89,20 @@ const PhotoEditor: React.FC<Props> = ({ visible, imageUri, onClose, onSave }) =>
     })
   ).current;
 
+  // Kullanılabilir yükseklik hesapla
+  const availableHeight = SCREEN_HEIGHT - topInset - bottomInset - 180; // Header + mode selector + instructions
+
   // Load image dimensions
   React.useEffect(() => {
     if (imageUri) {
       Image.getSize(imageUri, (w, h) => {
-        const maxWidth = SCREEN_WIDTH - 40;
-        const maxHeight = SCREEN_HEIGHT * 0.5;
+        const maxWidth = SCREEN_WIDTH - 20;
+        const maxHeight = availableHeight;
         const ratio = Math.min(maxWidth / w, maxHeight / h);
         setImageSize({ width: w * ratio, height: h * ratio });
       });
     }
-  }, [imageUri]);
+  }, [imageUri, availableHeight]);
 
   const handleCrop = async () => {
     try {
@@ -250,19 +261,27 @@ const PhotoEditor: React.FC<Props> = ({ visible, imageUri, onClose, onSave }) =>
 
   return (
     <Modal visible={visible} animationType="slide" transparent={false}>
-      <SafeAreaView style={styles.container}>
+      <View style={[styles.container, { paddingTop: topInset, paddingBottom: bottomInset }]}>
+        <StatusBar barStyle="light-content" backgroundColor="#000" />
+        
         {/* Header */}
         <View style={styles.header}>
-          <TouchableOpacity onPress={onClose} style={styles.headerButton}>
+          <TouchableOpacity onPress={onClose} style={styles.closeButton}>
             <Ionicons name="close" size={28} color={COLORS.text} />
           </TouchableOpacity>
           <Text style={styles.title}>Fotoğraf Düzenle</Text>
           <TouchableOpacity 
             onPress={handleSave} 
-            style={styles.headerButton}
+            style={styles.sendButton}
             disabled={isProcessing}
           >
-            <Ionicons name="checkmark" size={28} color={COLORS.primary} />
+            <LinearGradient
+              colors={[COLORS.primary, COLORS.primaryDark]}
+              style={styles.sendButtonGradient}
+            >
+              <Ionicons name="send" size={18} color={COLORS.text} />
+              <Text style={styles.sendButtonText}>Gönder</Text>
+            </LinearGradient>
           </TouchableOpacity>
         </View>
 
@@ -272,19 +291,19 @@ const PhotoEditor: React.FC<Props> = ({ visible, imageUri, onClose, onSave }) =>
             style={[styles.modeButton, editMode === 'crop' && styles.modeButtonActive]}
             onPress={() => setEditMode(editMode === 'crop' ? null : 'crop')}
           >
-            <Ionicons name="crop" size={24} color={editMode === 'crop' ? COLORS.primary : COLORS.text} />
+            <Ionicons name="crop" size={22} color={editMode === 'crop' ? COLORS.primary : COLORS.text} />
             <Text style={[styles.modeText, editMode === 'crop' && styles.modeTextActive]}>Kırp</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.modeButton, editMode === 'draw' && styles.modeButtonActive]}
             onPress={() => setEditMode(editMode === 'draw' ? null : 'draw')}
           >
-            <Ionicons name="brush" size={24} color={editMode === 'draw' ? COLORS.primary : COLORS.text} />
+            <Ionicons name="brush" size={22} color={editMode === 'draw' ? COLORS.primary : COLORS.text} />
             <Text style={[styles.modeText, editMode === 'draw' && styles.modeTextActive]}>Çiz</Text>
           </TouchableOpacity>
           {editMode === 'draw' && paths.length > 0 && (
             <TouchableOpacity style={styles.undoButton} onPress={handleUndo}>
-              <Ionicons name="arrow-undo" size={24} color={COLORS.text} />
+              <Ionicons name="arrow-undo" size={22} color={COLORS.text} />
             </TouchableOpacity>
           )}
         </View>
@@ -308,10 +327,10 @@ const PhotoEditor: React.FC<Props> = ({ visible, imageUri, onClose, onSave }) =>
           <Text style={styles.instructionText}>
             {editMode === 'crop' && 'Kırpmak istediğiniz alanı seçin'}
             {editMode === 'draw' && 'Parmağınızla çizin'}
-            {!editMode && 'Düzenleme modu seçin'}
+            {!editMode && 'Düzenlemeden göndermek için "Gönder" butonuna basın'}
           </Text>
         </View>
-      </SafeAreaView>
+      </View>
     </Modal>
   );
 };
@@ -319,7 +338,7 @@ const PhotoEditor: React.FC<Props> = ({ visible, imageUri, onClose, onSave }) =>
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: '#000',
   },
   header: {
     flexDirection: 'row',
@@ -327,44 +346,68 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: SPACING.md,
     paddingVertical: SPACING.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.surface,
+    height: 56,
   },
-  headerButton: {
-    padding: SPACING.xs,
+  closeButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   title: {
-    ...FONTS.h3,
+    fontSize: 17,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  sendButton: {
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  sendButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    gap: 6,
+  },
+  sendButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
     color: COLORS.text,
   },
   modeSelector: {
     flexDirection: 'row',
     justifyContent: 'center',
-    paddingVertical: SPACING.md,
-    gap: SPACING.lg,
+    paddingVertical: SPACING.sm,
+    gap: SPACING.md,
   },
   modeButton: {
     alignItems: 'center',
-    padding: SPACING.sm,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.xs,
     borderRadius: 12,
-    backgroundColor: COLORS.surface,
-    minWidth: 70,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    minWidth: 60,
   },
   modeButtonActive: {
-    backgroundColor: COLORS.primary + '30',
+    backgroundColor: COLORS.primary + '40',
   },
   modeText: {
-    ...FONTS.caption,
+    fontSize: 11,
     color: COLORS.text,
-    marginTop: 4,
+    marginTop: 2,
   },
   modeTextActive: {
     color: COLORS.primary,
   },
   undoButton: {
-    padding: SPACING.sm,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.xs,
     borderRadius: 12,
-    backgroundColor: COLORS.surface,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    justifyContent: 'center',
   },
   canvasContainer: {
     flex: 1,
@@ -373,8 +416,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#000',
   },
   image: {
-    maxWidth: '100%',
-    maxHeight: '100%',
+    borderRadius: 12,
   },
   cropOverlay: {
     ...StyleSheet.absoluteFillObject,

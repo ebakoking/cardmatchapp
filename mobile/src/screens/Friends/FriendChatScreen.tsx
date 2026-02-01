@@ -11,12 +11,16 @@ import {
   Alert,
   Modal,
   Animated,
+  Image,
+  Dimensions,
+  Vibration,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import * as ImagePicker from 'expo-image-picker';
 import { Audio } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS } from '../../theme/colors';
 import { FONTS } from '../../theme/fonts';
 import { SPACING } from '../../theme/spacing';
@@ -27,7 +31,17 @@ import MessageBubble from '../../components/MessageBubble';
 import ProfilePhoto from '../../components/ProfilePhoto';
 import PhotoEditor from '../../components/PhotoEditor';
 import VideoPreview from '../../components/VideoPreview';
+import PhotoViewModal from '../../components/PhotoViewModal';
 import { useAudioRecorder } from '../../hooks/useAudioRecorder';
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+
+// Elmas maliyetleri (match sistemiyle aynı)
+const ELMAS_COSTS = {
+  viewAudio: 5,
+  viewPhoto: 20,
+  viewVideo: 50,
+};
 
 type Props = NativeStackScreenProps<any, 'FriendChat'>;
 
@@ -38,6 +52,7 @@ interface FriendMessage {
   mediaUrl?: string | null;
   mediaType?: 'audio' | 'photo' | 'video' | null;
   isInstant?: boolean;
+  isViewed?: boolean;
   createdAt: string;
   isSystem?: boolean;
   systemType?: 'gift' | 'info';
@@ -45,6 +60,10 @@ interface FriendMessage {
     fromNickname?: string;
     amount?: number;
   };
+  // YENİ: Medya kilitleme sistemi
+  locked?: boolean;      // Medya kilitli mi?
+  isFirstFree?: boolean; // Bu gönderenin ilk medyası mı?
+  mediaPrice?: number;   // Açma maliyeti
 }
 
 // Hediye seçenekleri
@@ -68,6 +87,15 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const [pendingVideoIsInstant, setPendingVideoIsInstant] = useState(false);
   const [purchaseModalVisible, setPurchaseModalVisible] = useState(false);
   const [pendingGiftAmount, setPendingGiftAmount] = useState(0);
+  const [selectedMedia, setSelectedMedia] = useState<FriendMessage | null>(null);
+  
+  // Medya kilitleme sistemi - BASİT: message.locked kullan
+  const [photoModalVisible, setPhotoModalVisible] = useState(false);
+  const [viewedMediaIds, setViewedMediaIds] = useState<Set<string>>(new Set());
+  const [isCurrentMediaFirstFree, setIsCurrentMediaFirstFree] = useState(false);
+  const [isMediaAlreadyPaid, setIsMediaAlreadyPaid] = useState(false);
+  const [isPartnerInChat, setIsPartnerInChat] = useState(false); // Arkadaş sohbette mi?
+  
   const flatListRef = useRef<FlatList>(null);
 
   // Audio recorder hook
@@ -158,10 +186,18 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
   // Socket bağlantısı ve mesaj dinleyicileri
   useEffect(() => {
     const socket = getSocket();
-    socket.emit('friend:join', { friendshipId });
+    socket.emit('friend:join', { friendshipId, userId: user?.id });
 
     // Mevcut mesajları yükle
     loadMessages();
+
+    // Arkadaş sohbete girdi/çıktı
+    socket.on('friend:presence', (payload: { odaId: string; userId: string; isOnline: boolean }) => {
+      if (payload.odaId === friendshipId && payload.userId === friendId) {
+        setIsPartnerInChat(payload.isOnline);
+        console.log(`[FriendChat] Partner presence: ${payload.isOnline ? 'online' : 'offline'}`);
+      }
+    });
 
     socket.on('friend:message', (msg: FriendMessage & { friendChatId?: string }) => {
       if (msg.friendChatId !== friendshipId) return;
@@ -189,8 +225,8 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
         // Animasyon göster
         showGiftAnimation(payload.amount, 'received');
       }
-      // Profili yenile - bakiyeyi veritabanından çek
-      refreshProfile();
+      // NOT: refreshProfile kaldırıldı - AuthContext socket eventi ile balance güncelliyor
+      // refreshProfile() balance'ı koruyacak şekilde güncellendi ama gereksiz çağrı
     });
 
     // Hediye gönderildiğinde - UI güncelle (bakiye AuthContext'te güncelleniyor)
@@ -207,8 +243,7 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
         };
         setMessages((prev) => [...prev, systemMessage]);
       }
-      // Profili yenile - bakiyeyi veritabanından çek
-      refreshProfile();
+      // NOT: Balance AuthContext tarafından socket eventi ile güncelleniyor
     });
 
     // Hediye hatası - KILL SWITCH dahil
@@ -224,12 +259,14 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
     });
 
     return () => {
+      socket.emit('friend:leave', { friendshipId, userId: user?.id });
       socket.off('friend:message');
       socket.off('friend:gift:received');
       socket.off('friend:gift:sent');
       socket.off('friend:gift:error');
+      socket.off('friend:presence');
     };
-  }, [friendshipId, friendId, showGiftAnimation]);
+  }, [friendshipId, friendId, user?.id, showGiftAnimation]);
 
   // Mevcut mesajları API'den yükle
   const loadMessages = async () => {
@@ -464,8 +501,21 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
     });
 
     if (!result.canceled && result.assets[0]) {
+      // Video süresi kontrolü (30 saniye max)
+      const asset = result.assets[0];
+      const durationSeconds = asset.duration ? asset.duration / 1000 : 0;
+      
+      if (durationSeconds > 30) {
+        Alert.alert(
+          'Video Çok Uzun',
+          `Video süresi ${Math.floor(durationSeconds)} saniye. Maksimum 30 saniye olmalı.`,
+          [{ text: 'Tamam' }]
+        );
+        return;
+      }
+      
       // Önizlemeye gönder
-      setPendingVideoUri(result.assets[0].uri);
+      setPendingVideoUri(asset.uri);
       setPendingVideoIsInstant(isInstant);
       setVideoPreviewVisible(true);
     }
@@ -503,14 +553,24 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
       const apiBaseUrl = api.defaults.baseURL || 'http://localhost:3000';
       const endpoint = type === 'photo' ? '/api/upload/photo' : '/api/upload/video';
       
+      console.log(`[FriendChat] Uploading ${type} to ${apiBaseUrl}${endpoint}`);
+      
       const response = await fetch(`${apiBaseUrl}${endpoint}`, {
         method: 'POST',
         body: formData,
-        headers: { 'Content-Type': 'multipart/form-data' },
+        // Content-Type header'ı FormData için otomatik ayarlanır - manuel ayarlamayın!
       });
 
-      if (!response.ok) throw new Error('Upload failed');
+      console.log(`[FriendChat] Upload response status: ${response.status}`);
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[FriendChat] Upload error: ${errorText}`);
+        throw new Error('Upload failed');
+      }
+      
       const data = await response.json();
+      console.log(`[FriendChat] Upload successful, URL: ${data.url}`);
 
       const socket = getSocket();
       socket.emit('friend:media', {
@@ -521,9 +581,9 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
         isInstant,
       });
       
-      Alert.alert('Başarılı', `${type === 'photo' ? 'Fotoğraf' : 'Video'} gönderildi!`);
+      Vibration.vibrate(30);
     } catch (error) {
-      console.error(`${type} upload error:`, error);
+      console.error(`[FriendChat] ${type} upload error:`, error);
       Alert.alert('Hata', `${type === 'photo' ? 'Fotoğraf' : 'Video'} yüklenemedi.`);
     }
   };
@@ -534,7 +594,7 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
     
     // 🔴 KILL SWITCH: Feature devre dışıysa uyar
     if (!tokenGiftEnabled) {
-      Alert.alert('Bakım', tokenGiftDisabledMessage || 'Jeton sistemi geçici olarak kapalı.');
+      Alert.alert('Bakım', tokenGiftDisabledMessage || 'Elmas gönderimi geçici olarak kapalı.');
       setGiftModalVisible(false);
       return;
     }
@@ -597,6 +657,16 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
   // ============ ARAMA ============
   const handleVoiceCall = () => {
+    // Arkadaş sohbette değilse arama yapılamaz
+    if (!isPartnerInChat) {
+      Vibration.vibrate(50);
+      Alert.alert(
+        'Arama Yapılamıyor',
+        `${friendNickname} şu an sohbet ekranında değil. Arama yapmak için her iki kullanıcının da sohbet ekranında olması gerekiyor.`
+      );
+      return;
+    }
+    
     Alert.alert(
       'Sesli Arama',
       `${friendNickname} ile sesli arama başlatılsın mı?`,
@@ -608,6 +678,16 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
   };
 
   const handleVideoCall = () => {
+    // Arkadaş sohbette değilse arama yapılamaz
+    if (!isPartnerInChat) {
+      Vibration.vibrate(50);
+      Alert.alert(
+        'Arama Yapılamıyor',
+        `${friendNickname} şu an sohbet ekranında değil. Arama yapmak için her iki kullanıcının da sohbet ekranında olması gerekiyor.`
+      );
+      return;
+    }
+    
     Alert.alert(
       'Görüntülü Arama',
       `${friendNickname} ile görüntülü arama başlatılsın mı?`,
@@ -618,6 +698,135 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
     );
   };
 
+  // ============ MEDYA KİLİTLEME SİSTEMİ ============
+  
+  // Medya tıklandığında - BASİT SİSTEM: message.locked kullan
+  const handleMediaPress = (message: FriendMessage) => {
+    if (!message.mediaUrl) return;
+    if (message.mediaType !== 'photo' && message.mediaType !== 'video') return;
+    
+    const isMine = message.senderId === user?.id;
+    
+    // Kendi medyam ise direkt aç
+    if (isMine) {
+      setSelectedMedia(message);
+      setIsCurrentMediaFirstFree(true);
+      setIsMediaAlreadyPaid(false);
+      setPhotoModalVisible(true);
+      return;
+    }
+    
+    // Zaten görüntülendi mi? (ephemeral - sadece 1 kez izlenebilir)
+    if (viewedMediaIds.has(message.id)) {
+      Vibration.vibrate(50);
+      Alert.alert('Görüntülendi', 'Bu medya daha önce görüntülendi ve artık erişilemez.');
+      return;
+    }
+    
+    // SERVER'DAN GELEN locked VE isFirstFree KULLAN
+    const isFirstFree = !message.locked && message.isFirstFree === true;
+    
+    console.log(`[FriendChat] Media press: locked=${message.locked}, isFirstFree=${isFirstFree}`);
+    
+    setSelectedMedia(message);
+    setIsCurrentMediaFirstFree(isFirstFree);
+    setIsMediaAlreadyPaid(false);
+    setPhotoModalVisible(true);
+  };
+
+  // Elmas ile medya görüntüleme - BASİT SİSTEM
+  const handleViewWithElmas = async (messageId: string): Promise<boolean> => {
+    console.log('[FriendChat] handleViewWithElmas messageId:', messageId);
+
+    return new Promise((resolve) => {
+      const socket = getSocket();
+      
+      const handleUnlocked = (payload: { messageId: string; success: boolean; cost: number; free?: boolean; newBalance?: number }) => {
+        console.log('[FriendChat] friend:media:unlocked received:', payload);
+        if (payload.messageId === messageId) {
+          socket.off('friend:media:unlocked', handleUnlocked);
+          socket.off('error', handleError);
+          
+          if (payload.success) {
+            setViewedMediaIds(prev => new Set(prev).add(messageId));
+            
+            // Mesajı güncelle (locked = false)
+            setMessages(prev => prev.map(m => 
+              m.id === messageId ? { ...m, locked: false } : m
+            ));
+            
+            Vibration.vibrate(30);
+            resolve(true);
+          } else {
+            resolve(false);
+          }
+        }
+      };
+      
+      const handleError = (payload: { code: string; message: string; required?: number; balance?: number }) => {
+        console.log('[FriendChat] error received:', payload);
+        socket.off('friend:media:unlocked', handleUnlocked);
+        socket.off('error', handleError);
+        
+        if (payload.code === 'INSUFFICIENT_BALANCE') {
+          const mediaType = selectedMedia?.mediaType === 'video' ? 'videoyu' : 'fotoğrafı';
+          Alert.alert(
+            'Yetersiz Elmas',
+            `Bu ${mediaType} görmek için ${payload.required} elmas gerekiyor.\nBakiyeniz: ${payload.balance || 0}`,
+          );
+        } else {
+          Alert.alert('Hata', payload.message || 'Bir hata oluştu.');
+        }
+        resolve(false);
+      };
+      
+      socket.on('friend:media:unlocked', handleUnlocked);
+      socket.on('error', handleError);
+      
+      console.log('[FriendChat] Emitting friend:media:unlock');
+      socket.emit('friend:media:unlock', {
+        friendshipId,
+        messageId,
+        userId: user?.id,
+      });
+      
+      // 10 saniye timeout
+      setTimeout(() => {
+        socket.off('friend:media:unlocked', handleUnlocked);
+        socket.off('error', handleError);
+        console.log('[FriendChat] Timeout');
+        resolve(false);
+      }, 10000);
+    });
+  };
+
+  // Elmas iste
+  const handleRequestElmas = () => {
+    setPhotoModalVisible(false);
+    setSelectedMedia(null);
+    Alert.alert('Elmas İste', 'Arkadaşınızdan elmas isteyebilirsiniz!');
+  };
+
+  // Medya görüntülendi
+  const handleMediaViewed = (messageId: string, mediaType: 'photo' | 'video') => {
+    console.log(`[FriendChat] Media viewed: ${messageId}, type: ${mediaType}`);
+    setViewedMediaIds(prev => new Set(prev).add(messageId));
+    
+    // Mesajı güncelle (locked = false)
+    setMessages(prev => prev.map(msg => 
+      msg.id === messageId ? { ...msg, locked: false, isViewed: true } : msg
+    ));
+  };
+
+  // Elmas satın al modalını aç
+  const handlePurchaseElmas = () => {
+    setPhotoModalVisible(false);
+    setSelectedMedia(null);
+    setPurchaseModalVisible(true);
+  };
+
+  // ============ ARAMA KONTROLÜ ============
+  
   const startCall = (type: 'voice' | 'video') => {
     const socket = getSocket();
     socket.emit('friend:call:start', {
@@ -696,15 +905,25 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
           style={styles.list}
           data={messages}
           keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <MessageBubble
-              message={item}
-              isMine={item.senderId === user?.id}
-              isUnlocked={true} // Arkadaş sohbetinde tüm medyalar açık
-              isFirstFreeView={false} // Kilitleme sistemi yok
-              photoIndex={0}
-            />
-          )}
+          renderItem={({ item, index }) => {
+            const isMine = item.senderId === user?.id;
+            const isViewed = viewedMediaIds.has(item.id) || item.isViewed;
+            const isUnlocked = isMine || isViewed || item.locked === false;
+            
+            // SERVER'DAN GELEN isFirstFree KULLAN
+            const isFirstFreeView = !isMine && item.isFirstFree === true && !item.locked;
+            
+            return (
+              <MessageBubble
+                message={{ ...item, isViewed }}
+                isMine={isMine}
+                isUnlocked={isUnlocked}
+                isFirstFreeView={isFirstFreeView}
+                photoIndex={index}
+                onMediaPress={handleMediaPress}
+              />
+            );
+          }}
           onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
         />
 
@@ -862,6 +1081,32 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
             videoUri={pendingVideoUri}
             onClose={handleVideoPreviewClose}
             onSend={handleVideoSend}
+          />
+        )}
+
+        {/* Photo View Modal (Kilitleme sistemi ile) */}
+        {selectedMedia && (
+          <PhotoViewModal
+            visible={photoModalVisible}
+            onClose={() => {
+              setPhotoModalVisible(false);
+              setSelectedMedia(null);
+              setIsCurrentMediaFirstFree(false);
+              setIsMediaAlreadyPaid(false);
+            }}
+            onViewed={handleMediaViewed}
+            imageUrl={selectedMedia.mediaUrl || ''}
+            messageId={selectedMedia.id}
+            mediaType={selectedMedia.mediaType === 'video' ? 'video' : 'photo'}
+            isMine={selectedMedia.senderId === user?.id}
+            isFirstFreeView={isCurrentMediaFirstFree || isMediaAlreadyPaid}
+            elmasCost={selectedMedia.mediaType === 'video' ? ELMAS_COSTS.viewVideo : ELMAS_COSTS.viewPhoto}
+            userElmasBalance={user?.tokenBalance || 0}
+            onViewWithElmas={handleViewWithElmas}
+            onRequestElmas={handleRequestElmas}
+            onPurchaseElmas={handlePurchaseElmas}
+            senderNickname={friendNickname}
+            isInstantPhoto={selectedMedia.isInstant || false}
           />
         )}
 

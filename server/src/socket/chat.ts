@@ -26,7 +26,7 @@ const MEDIA_COSTS = {
 const STAGE_CONFIG: Record<number, StageConfig> = {
   1: {
     name: 'TEXT_GIFT',
-    // Stage 1: Sadece text + jeton gönderimi (TEST: 10 saniye)
+    // Stage 1: Sadece text + elmas gönderimi (TEST: 10 saniye)
     duration: 10, // TEST İÇİN 10 SANİYE
     minMessages: 0, // Mesaj şartı YOK
     features: ['text_message', 'gift'],
@@ -73,6 +73,13 @@ const freeMediaUsage = new Map<
 >();
 
 export function registerChatHandlers(io: Server, socket: Socket) {
+  // DEBUG: Tüm gelen eventleri logla
+  socket.onAny((eventName, ...args) => {
+    if (eventName !== 'user:join' && !eventName.startsWith('chat:typing')) {
+      console.log(`[Socket DEBUG] Event received: ${eventName}`, JSON.stringify(args).substring(0, 200));
+    }
+  });
+
   // Kullanıcıyı kendi room'una katıl (gift:received vb. için gerekli)
   socket.on('user:join', async (payload: { userId: string }) => {
     const { userId } = payload;
@@ -86,6 +93,44 @@ export function registerChatHandlers(io: Server, socket: Socket) {
         where: { id: userId },
         data: { isOnline: true },
       });
+      
+      // Tüm aktif session'lara online durumu bildir
+      io.emit('user:status', {
+        userId,
+        isOnline: true,
+      });
+    }
+  });
+
+  // Typing event - karşı tarafa yazıyor bilgisi gönder
+  socket.on('chat:typing', async (payload: { sessionId: string; userId: string; isTyping: boolean }) => {
+    const { sessionId, userId, isTyping } = payload;
+    console.log('[Chat] chat:typing received:', { sessionId, userId, isTyping });
+    
+    // Session'daki diğer kullanıcıya bildir
+    socket.to(sessionId).emit('chat:typing', {
+      userId,
+      isTyping,
+    });
+  });
+
+  // Kullanıcıyı beğen (iyi kullanıcı geri bildirimi)
+  socket.on('user:like', async (payload: { fromUserId: string; toUserId: string; sessionId: string }) => {
+    const { fromUserId, toUserId, sessionId } = payload;
+    console.log('[Chat] user:like received:', payload);
+    
+    try {
+      // Kullanıcının pozitif geri bildirim sayısını artır
+      await prisma.user.update({
+        where: { id: toUserId },
+        data: {
+          positiveRatings: { increment: 1 },
+        },
+      });
+      
+      console.log(`[Chat] User ${toUserId} received positive rating from ${fromUserId}`);
+    } catch (error) {
+      console.error('[Chat] user:like error:', error);
     }
   });
 
@@ -96,13 +141,22 @@ export function registerChatHandlers(io: Server, socket: Socket) {
       console.log('[Chat] user:leave - leaving user room:', userId);
       socket.leave(userId);
       
+      const now = new Date();
+      
       // Kullanıcıyı offline yap ve son görülme zamanını güncelle
       await prisma.user.update({
         where: { id: userId },
         data: { 
           isOnline: false,
-          lastSeenAt: new Date(),
+          lastSeenAt: now,
         },
+      });
+      
+      // Tüm aktif session'lara offline durumu bildir
+      io.emit('user:status', {
+        userId,
+        isOnline: false,
+        lastSeenAt: now.toISOString(),
       });
     }
   });
@@ -186,12 +240,20 @@ export function registerChatHandlers(io: Server, socket: Socket) {
     const userIdToUpdate = userId || chatUserId;
     if (userIdToUpdate) {
       console.log('[Chat] disconnect - setting user offline:', userIdToUpdate);
+      const now = new Date();
       await prisma.user.update({
         where: { id: userIdToUpdate },
         data: { 
           isOnline: false,
-          lastSeenAt: new Date(),
+          lastSeenAt: now,
         },
+      }).then(() => {
+        // Tüm aktif session'lara offline durumu bildir
+        io.emit('user:status', {
+          userId: userIdToUpdate,
+          isOnline: false,
+          lastSeenAt: now.toISOString(),
+        });
       }).catch(() => {
         // Kullanıcı bulunamadıysa sessizce geç
       });
@@ -262,36 +324,25 @@ export function registerChatHandlers(io: Server, socket: Socket) {
           return;
         }
 
-        const usage =
-          freeMediaUsage.get(session.id) ||
-          {
-            freePhotosUsed: new Map<string, number>(),
-            freeVideosUsed: new Map<string, number>(),
-          };
+        // Alıcıyı belirle (session'daki diğer kullanıcı)
+        const receiverId = session.user1Id === payload.senderId ? session.user2Id : session.user1Id;
 
-        const isUser1 = payload.senderId === session.user1Id;
-        const key = isUser1 ? 'user1' : 'user2';
-        const freeUsed =
-          usage.freePhotosUsed.get(key) === undefined
-            ? 0
-            : usage.freePhotosUsed.get(key)!;
+        // İLK MEDYA KONTROLÜ: Bu gönderenin bu alıcıya daha önce gönderdiği FOTO sayısı
+        const previousPhotoCount = await prisma.message.count({
+          where: {
+            chatSessionId: session.id,
+            senderId: payload.senderId,
+            mediaType: 'photo',
+          },
+        });
 
-        let cost = 0;
-        if (freeUsed === 0) {
-          usage.freePhotosUsed.set(key, 1);
-        } else {
-          cost = STAGE_CONFIG[session.currentStage].photoCost || 5;
-          await prisma.user.update({
-            where: { id: payload.senderId },
-            data: {
-              tokenBalance: {
-                decrement: cost,
-              },
-            },
-          });
-        }
+        // İlk foto ise: locked=false, isFirstFree=true
+        // Sonrakiler: locked=true, isFirstFree=false
+        const isFirstFree = previousPhotoCount === 0;
+        const locked = !isFirstFree;
+        const mediaPrice = MEDIA_COSTS.photo; // 20 token
 
-        freeMediaUsage.set(session.id, usage);
+        console.log(`[Chat] Photo - previousCount: ${previousPhotoCount}, isFirstFree: ${isFirstFree}, locked: ${locked}`);
 
         const message = await prisma.message.create({
           data: {
@@ -299,6 +350,9 @@ export function registerChatHandlers(io: Server, socket: Socket) {
             senderId: payload.senderId,
             mediaUrl: payload.url,
             mediaType: 'photo',
+            locked,
+            isFirstFree,
+            mediaPrice,
           },
         });
 
@@ -310,11 +364,6 @@ export function registerChatHandlers(io: Server, socket: Socket) {
           chatSessionId: session.id,
           isInstant: payload.isInstant || false,
         });
-        
-        // Maliyet bilgisi için ayrıca emit
-        if (cost > 0) {
-          socket.emit('media:cost', { cost, type: 'photo' });
-        }
       } catch (error) {
         console.error('[Chat] Photo error:', error);
         socket.emit('error', {
@@ -350,36 +399,20 @@ export function registerChatHandlers(io: Server, socket: Socket) {
           return;
         }
 
-        const usage =
-          freeMediaUsage.get(session.id) ||
-          {
-            freePhotosUsed: new Map<string, number>(),
-            freeVideosUsed: new Map<string, number>(),
-          };
+        // İLK MEDYA KONTROLÜ: Bu gönderenin bu session'a daha önce gönderdiği VİDEO sayısı
+        const previousVideoCount = await prisma.message.count({
+          where: {
+            chatSessionId: session.id,
+            senderId: payload.senderId,
+            mediaType: 'video',
+          },
+        });
 
-        const isUser1 = payload.senderId === session.user1Id;
-        const key = isUser1 ? 'user1' : 'user2';
-        const freeUsed =
-          usage.freeVideosUsed.get(key) === undefined
-            ? 0
-            : usage.freeVideosUsed.get(key)!;
+        const isFirstFree = previousVideoCount === 0;
+        const locked = !isFirstFree;
+        const mediaPrice = MEDIA_COSTS.video; // 50 token
 
-        let cost = 0;
-        if (freeUsed === 0) {
-          usage.freeVideosUsed.set(key, 1);
-        } else {
-          cost = STAGE_CONFIG[session.currentStage].videoCost || 10;
-          await prisma.user.update({
-            where: { id: payload.senderId },
-            data: {
-              tokenBalance: {
-                decrement: cost,
-              },
-            },
-          });
-        }
-
-        freeMediaUsage.set(session.id, usage);
+        console.log(`[Chat] Video - previousCount: ${previousVideoCount}, isFirstFree: ${isFirstFree}, locked: ${locked}`);
 
         const message = await prisma.message.create({
           data: {
@@ -387,6 +420,9 @@ export function registerChatHandlers(io: Server, socket: Socket) {
             senderId: payload.senderId,
             mediaUrl: payload.url,
             mediaType: 'video',
+            locked,
+            isFirstFree,
+            mediaPrice,
           },
         });
 
@@ -397,11 +433,6 @@ export function registerChatHandlers(io: Server, socket: Socket) {
           ...message,
           chatSessionId: session.id,
         });
-        
-        // Maliyet bilgisi için ayrıca emit
-        if (cost > 0) {
-          socket.emit('media:cost', { cost, type: 'video' });
-        }
       } catch (error) {
         console.error('[Chat] Video error:', error);
         socket.emit('error', {
@@ -440,12 +471,30 @@ export function registerChatHandlers(io: Server, socket: Socket) {
           return;
         }
 
+        // İLK MEDYA KONTROLÜ: Bu gönderenin bu session'a daha önce gönderdiği SES sayısı
+        const previousAudioCount = await prisma.message.count({
+          where: {
+            chatSessionId: session.id,
+            senderId: payload.senderId,
+            mediaType: 'audio',
+          },
+        });
+
+        const isFirstFree = previousAudioCount === 0;
+        const locked = !isFirstFree;
+        const mediaPrice = MEDIA_COSTS.audio; // 5 token
+
+        console.log(`[Chat] Audio - previousCount: ${previousAudioCount}, isFirstFree: ${isFirstFree}, locked: ${locked}`);
+
         const message = await prisma.message.create({
           data: {
             chatSessionId: session.id,
             senderId: payload.senderId,
             mediaUrl: payload.url,
             mediaType: 'audio',
+            locked,
+            isFirstFree,
+            mediaPrice,
           },
         });
 
@@ -467,7 +516,7 @@ export function registerChatHandlers(io: Server, socket: Socket) {
     },
   );
 
-  // Jeton gönder - YENİ SİSTEM
+  // Elmas gönder - YENİ SİSTEM
   socket.on(
     'gift:send',
     async (payload: {
@@ -477,7 +526,7 @@ export function registerChatHandlers(io: Server, socket: Socket) {
       amount: number;
     }) => {
       try {
-        // 🔴 KILL SWITCH: Jeton sistemi kapalıysa işlemi reddet
+        // 🔴 KILL SWITCH: Elmas sistemi kapalıysa işlemi reddet
         logTokenGiftAttempt(!FEATURES.TOKEN_GIFT_ENABLED);
         if (!FEATURES.TOKEN_GIFT_ENABLED) {
           console.log('[Gift] ⛔ TOKEN GIFT DISABLED - Request blocked');
@@ -522,7 +571,7 @@ export function registerChatHandlers(io: Server, socket: Socket) {
           console.log('[Gift] ERROR: Insufficient balance. Has:', sender.tokenBalance, 'Needs:', amount);
           socket.emit('gift:error', { 
             code: 'INSUFFICIENT_BALANCE', 
-            message: 'Yetersiz jeton bakiyesi.',
+            message: 'Yetersiz elmas bakiyesi.',
             balance: sender.tokenBalance,
             required: amount,
           });
@@ -535,14 +584,18 @@ export function registerChatHandlers(io: Server, socket: Socket) {
         }
 
         // Transaction: Token transfer + Gift kaydı + Message kaydı
+        // NOT: Gift gönderene SPARK YAZILMAZ (kötü niyetli kullanım riski)
         console.log('[Gift] Executing transaction...');
         const [updatedSender, updatedReceiver, gift, message] = await prisma.$transaction([
-          // 1. Gönderenin bakiyesini düşür
+          // 1. Gönderenin bakiyesini düşür (SPARK YOK - kaldırıldı)
           prisma.user.update({
             where: { id: fromUserId },
-            data: { tokenBalance: { decrement: amount } },
+            data: { 
+              tokenBalance: { decrement: amount },
+              // Spark KALDIRILDI - kötü niyetli kullanım riski
+            },
           }),
-          // 2. Alıcının bakiyesini artır
+          // 2. Alıcının bakiyesini artır (spark YOK)
           prisma.user.update({
             where: { id: toUserId },
             data: { 
@@ -594,7 +647,7 @@ export function registerChatHandlers(io: Server, socket: Socket) {
         console.log(`[Gift] Emitting chat:message (TOKEN_GIFT) to session: ${sessionId}`);
         io.to(sessionId).emit('chat:message', giftMessage);
 
-        // 2. Gönderene bakiye güncellemesi
+        // 2. Gönderene bakiye güncellemesi (SPARK YOK - kaldırıldı)
         console.log(`[Gift] Emitting gift:sent to sender: ${fromUserId}`);
         io.to(fromUserId).emit('gift:sent', {
           messageId: message.id,
@@ -602,6 +655,7 @@ export function registerChatHandlers(io: Server, socket: Socket) {
           amount,
           newBalance: updatedSender.tokenBalance,
         });
+        // NOT: Spark emission kaldırıldı (kötü niyetli kullanım riski)
 
         // 3. Alana bakiye güncellemesi
         console.log(`[Gift] Emitting gift:received to receiver: ${toUserId}`);
@@ -619,25 +673,24 @@ export function registerChatHandlers(io: Server, socket: Socket) {
         console.error('[Gift] Error:', error);
         socket.emit('gift:error', {
           code: 'GIFT_FAILED',
-          message: 'Jeton gönderilemedi.',
+          message: 'Elmas gönderilemedi.',
         });
       }
     },
   );
 
-  // Medya görüntüleme (token harcama + gönderene SPARK)
+  // Medya görüntüleme - BASİT SİSTEM: locked field'ına bak
   socket.on(
     'media:view',
     async (payload: {
       messageId: string;
       userId: string;
-      cost?: number; // Client'tan gelen cost kullanılmaz, server belirler
     }) => {
       console.log('[Chat] media:view received:', payload);
       try {
         const { messageId, userId } = payload;
 
-        // Mesajı ve göndereni bul
+        // 1. Mesajı bul
         const message = await prisma.message.findUnique({
           where: { id: messageId },
         });
@@ -650,38 +703,72 @@ export function registerChatHandlers(io: Server, socket: Socket) {
           return;
         }
 
-        // Kendi mesajını görüntülüyorsa ücretsiz
+        // 2. Kendi mesajını görüntülüyorsa her zaman ücretsiz
         if (message.senderId === userId) {
           socket.emit('media:viewed', {
             messageId,
             success: true,
             cost: 0,
-            wasFree: true,
+            free: true,
+            mediaUrl: message.mediaUrl,
           });
           return;
         }
 
-        // Medya türüne göre maliyet belirle (SERVER'DA BELİRLENİR!)
-        const mediaType = message.mediaType?.toLowerCase() || 'audio';
-        let cost: number;
-        if (mediaType === 'video') {
-          cost = MEDIA_COSTS.video; // 50 token
-        } else if (mediaType === 'photo') {
-          cost = MEDIA_COSTS.photo; // 20 token
-        } else {
-          cost = MEDIA_COSTS.audio; // 5 token (ses)
+        // 3. Zaten görüntülenmişse (unlocked) tekrar açılmasın
+        if (message.viewedBy === userId) {
+          socket.emit('media:viewed', {
+            messageId,
+            success: true,
+            cost: 0,
+            alreadyViewed: true,
+            mediaUrl: message.mediaUrl,
+          });
+          return;
         }
 
-        console.log(`[Chat] media:view - type: ${mediaType}, cost: ${cost}`);
+        // 4. LOCKED DEĞİLSE (ilk medya = ücretsiz)
+        if (!message.locked) {
+          console.log(`[Chat] FREE media view - isFirstFree: ${message.isFirstFree}`);
+          
+          // Mesajı görüntülendi olarak işaretle
+          await prisma.message.update({
+            where: { id: messageId },
+            data: {
+              viewedBy: userId,
+              viewedAt: new Date(),
+            },
+          });
 
-        // Kullanıcı bakiyesini kontrol et
+          const viewer = await prisma.user.findUnique({ where: { id: userId } });
+
+          socket.emit('media:viewed', {
+            messageId,
+            success: true,
+            cost: 0,
+            free: true,
+            isFirstFree: message.isFirstFree,
+            mediaUrl: message.mediaUrl,
+            newBalance: viewer?.tokenBalance || 0,
+          });
+
+          console.log(`[Chat] FREE media viewed: ${messageId} by ${userId}`);
+          return;
+        }
+
+        // 5. LOCKED İSE - ücretli açma
+        const cost = message.mediaPrice || MEDIA_COSTS.photo;
+        
+        console.log(`[Chat] PAID media view - cost: ${cost}`);
+
+        // 6. Bakiye kontrolü
         const viewer = await prisma.user.findUnique({
           where: { id: userId },
         });
 
         if (!viewer || viewer.tokenBalance < cost) {
           socket.emit('error', {
-            message: 'Yetersiz jeton bakiyesi.',
+            message: `Yetersiz elmas bakiyesi. ${cost} elmas gerekiyor.`,
             code: 'INSUFFICIENT_BALANCE',
             required: cost,
             balance: viewer?.tokenBalance || 0,
@@ -689,69 +776,80 @@ export function registerChatHandlers(io: Server, socket: Socket) {
           return;
         }
 
-        // Transaction: Token harcanır, gönderene SPARK kazandırılır (token gitmez!)
-        await prisma.$transaction([
-          // Görüntüleyenin bakiyesini düşür (token harcanır)
-          prisma.user.update({
+        // 7. Transaction: Token düş, Spark ekle, Mesaj aç - GÜNCEL BAKİYELERİ DÖN
+        console.log(`[Chat] 📸 MEDYA AÇ BAŞLADI - viewer: ${userId}, viewerBalance: ${viewer.tokenBalance}, cost: ${cost}`);
+        
+        const result = await prisma.$transaction(async (tx) => {
+          // Görüntüleyenin bakiyesini düşür VE güncel değeri al
+          const updatedViewer = await tx.user.update({
             where: { id: userId },
             data: { tokenBalance: { decrement: cost } },
-          }),
-          // Gönderene SPARK kazandır (tokenBalance DEĞİŞMEZ!)
-          prisma.user.update({
+            select: { tokenBalance: true },
+          });
+          
+          // Gönderene SPARK kazandır VE güncel değeri al
+          const updatedSender = await tx.user.update({
             where: { id: message.senderId },
             data: { 
-              // tokenBalance: DEĞİŞMEZ - token gönderene gitmez
-              monthlySparksEarned: { increment: cost },  // Spark kazanır (leaderboard için)
-              totalSparksEarned: { increment: cost },    // Lifetime spark
+              monthlySparksEarned: { increment: cost },
+              totalSparksEarned: { increment: cost },
             },
-          }),
-          // Mesajı görüntülendi olarak işaretle
-          prisma.message.update({
+            select: { monthlySparksEarned: true, totalSparksEarned: true },
+          });
+          
+          // Mesajı aç (locked = false)
+          await tx.message.update({
             where: { id: messageId },
             data: {
+              locked: false,
               viewedBy: userId,
               viewedAt: new Date(),
-              viewTokenCost: cost,
             },
-          }),
-        ]);
+          });
+          
+          // SparkTransaction kaydet
+          await tx.sparkTransaction.create({
+            data: {
+              fromUserId: userId,
+              toUserId: message.senderId,
+              amount: cost,
+              reason: 'media_unlock',
+            },
+          });
+          
+          return { updatedViewer, updatedSender };
+        });
 
-        // Güncellenmiş bakiyeleri al
-        const updatedViewer = await prisma.user.findUnique({ where: { id: userId } });
-        const sender = await prisma.user.findUnique({ where: { id: message.senderId } });
+        console.log(`[Chat] ✅ MEDYA AÇ TAMAMLANDI - viewerNewBalance: ${result.updatedViewer.tokenBalance}, senderSparks: ${result.updatedSender.monthlySparksEarned}`);
 
-        // Room kontrolü
-        const viewerRoom = io.sockets.adapter.rooms.get(userId);
-        const senderRoom = io.sockets.adapter.rooms.get(message.senderId);
-        console.log(`[Chat] Room check - Viewer (${userId}): ${viewerRoom?.size || 0} sockets`);
-        console.log(`[Chat] Room check - Sender (${message.senderId}): ${senderRoom?.size || 0} sockets`);
-
-        // Görüntüleyene bildir (token harcandı)
-        console.log(`[Chat] Emitting token:spent to viewer: ${userId}`);
+        // 8. Socket bildirimleri - TEK KAYNAK: Transaction sonucu
+        // token:spent - AuthContext bu eventi dinliyor
         io.to(userId).emit('token:spent', {
           amount: cost,
-          newBalance: updatedViewer?.tokenBalance || 0,
+          newBalance: result.updatedViewer.tokenBalance,
           reason: 'media_view',
         });
 
-        // Gönderene bildir (SPARK kazandı - token değil!)
-        console.log(`[Chat] Emitting spark:earned to sender: ${message.senderId}, amount: ${cost}, total: ${sender?.totalSparksEarned}`);
+        // spark:earned - gönderene bildir
         io.to(message.senderId).emit('spark:earned', {
           amount: cost,
-          monthlySparksEarned: sender?.monthlySparksEarned || 0,
-          totalSparksEarned: sender?.totalSparksEarned || 0,
+          monthlySparksEarned: result.updatedSender.monthlySparksEarned,
+          totalSparksEarned: result.updatedSender.totalSparksEarned,
           reason: 'media_viewed',
+          fromUserId: userId,
         });
 
-        // Görüntüleme onayı
+        // 9. Görüntüleme onayı - aynı newBalance
         socket.emit('media:viewed', {
           messageId,
           success: true,
           cost,
-          newBalance: updatedViewer?.tokenBalance || 0,
+          free: false,
+          mediaUrl: message.mediaUrl,
+          newBalance: result.updatedViewer.tokenBalance,
         });
 
-        console.log(`[Chat] Media viewed: ${messageId} by ${userId}, cost: ${cost} token, sender ${message.senderId} earned ${cost} spark`);
+        console.log(`[Chat] 📤 Events emitted - newBalance: ${result.updatedViewer.tokenBalance}`);
       } catch (error) {
         console.error('[Chat] Media view error:', error);
         socket.emit('error', {

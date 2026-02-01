@@ -19,20 +19,28 @@ import { SPACING } from '../../theme/spacing';
 import { api } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import BlurredPhoto from '../../components/BlurredPhoto';
+import { getPhotoUrl } from '../../utils/photoUrl';
 
 type Props = NativeStackScreenProps<any, 'FriendProfile'>;
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const PHOTO_SIZE = (SCREEN_WIDTH - SPACING.md * 3) / 2; // 2 sütunlu grid
-const PHOTO_UNLOCK_COST = 5; // Backend ile senkron olmalı
 
 interface ProfilePhoto {
   id: string;
   url: string;
   order: number;
+  type: 'CORE' | 'DAILY';
   caption?: string;
   hasCaption?: boolean;
   isUnlocked: boolean;
+  unlockCost: number;
+  createdAt: string;
+}
+
+interface UnlockCosts {
+  core: number;
+  daily: number;
 }
 
 interface FriendProfile {
@@ -40,16 +48,22 @@ interface FriendProfile {
   nickname: string;
   bio?: string;
   avatarId?: number;
+  profilePhotoUrl?: string; // Prime üyeler için özel profil fotoğrafı
   isPrime: boolean;
   isOnline: boolean;
   verified: boolean;
   profilePhotos: ProfilePhoto[];
+  corePhotos: ProfilePhoto[];
+  dailyPhotos: ProfilePhoto[];
   friendshipId: string;
   friendsSince: string;
   monthlySparksEarned: number;
   totalSparksEarned: number;
   lastSeenAt?: string;
+  unlockCosts: UnlockCosts;
 }
+
+type TabType = 'core' | 'daily';
 
 // Avatar listesi
 const AVATARS = [
@@ -69,6 +83,7 @@ const FriendProfileScreen: React.FC<Props> = ({ route, navigation }) => {
   const [profile, setProfile] = useState<FriendProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [userBalance, setUserBalance] = useState(user?.tokenBalance || 0);
+  const [activeTab, setActiveTab] = useState<TabType>('core');
 
   useEffect(() => {
     loadProfile();
@@ -109,14 +124,18 @@ const FriendProfileScreen: React.FC<Props> = ({ route, navigation }) => {
         // Bakiyeyi güncelle
         setUserBalance(res.data.data.newBalance);
         
-        // Profili güncelle (fotoğraf artık açık)
+        // Profili güncelle (fotoğraf artık açık) - hem corePhotos hem dailyPhotos
         setProfile(prev => {
           if (!prev) return prev;
+          
+          const updatePhoto = (p: ProfilePhoto) => 
+            p.id === photoId ? { ...p, isUnlocked: true, caption: res.data.data.photo?.caption } : p;
+          
           return {
             ...prev,
-            profilePhotos: prev.profilePhotos.map(p => 
-              p.id === photoId ? { ...p, isUnlocked: true, caption: res.data.data.photo.caption } : p
-            ),
+            profilePhotos: prev.profilePhotos?.map(updatePhoto) || [],
+            corePhotos: prev.corePhotos?.map(updatePhoto) || [],
+            dailyPhotos: prev.dailyPhotos?.map(updatePhoto) || [],
           };
         });
 
@@ -132,7 +151,7 @@ const FriendProfileScreen: React.FC<Props> = ({ route, navigation }) => {
     } catch (error: any) {
       console.error('Photo unlock error:', error);
       if (error.response?.status === 402) {
-        Alert.alert('Yetersiz Jeton', error.response.data.error.message);
+        Alert.alert('Yetersiz Elmas', error.response.data.error.message);
       } else {
         Alert.alert('Hata', 'Fotoğraf açılamadı.');
       }
@@ -140,7 +159,7 @@ const FriendProfileScreen: React.FC<Props> = ({ route, navigation }) => {
     }
   }, [refreshProfile]);
 
-  // Jeton satın alma sayfasına git
+  // Elmas satın alma sayfasına git
   const handlePurchaseTokens = useCallback(() => {
     navigation.navigate('Home', {
       screen: 'Profile',
@@ -238,11 +257,20 @@ const FriendProfileScreen: React.FC<Props> = ({ route, navigation }) => {
           <View style={{ width: 24 }} />
         </View>
 
-        {/* Avatar Section */}
+        {/* Avatar / Profile Photo Section */}
         <View style={styles.avatarSection}>
-          <View style={[styles.avatarContainer, { backgroundColor: avatar.color }]}>
-            <Text style={styles.avatarEmoji}>{avatar.emoji}</Text>
-          </View>
+          {profile.profilePhotoUrl ? (
+            // Prime kullanıcı özel profil fotoğrafı varsa göster
+            <Image 
+              source={{ uri: getPhotoUrl(profile.profilePhotoUrl) }} 
+              style={styles.profilePhoto}
+            />
+          ) : (
+            // Avatar göster
+            <View style={[styles.avatarContainer, { backgroundColor: avatar.color }]}>
+              <Text style={styles.avatarEmoji}>{avatar.emoji}</Text>
+            </View>
+          )}
           
           {/* Badges */}
           <View style={styles.badgesRow}>
@@ -261,23 +289,48 @@ const FriendProfileScreen: React.FC<Props> = ({ route, navigation }) => {
           </View>
         </View>
 
-        {/* Photo Grid (Blurred by default) */}
+        {/* Photo Tabs & Grid */}
         {hasProfilePhoto && (
           <View style={styles.photoGridSection}>
-            <Text style={styles.sectionTitle}>📸 Fotoğraflar</Text>
+            {/* Tabs */}
+            <View style={styles.tabs}>
+              <TouchableOpacity
+                style={[styles.tab, activeTab === 'core' && styles.tabActive]}
+                onPress={() => setActiveTab('core')}
+              >
+                <Text style={[styles.tabText, activeTab === 'core' && styles.tabTextActive]}>
+                  📸 Profil ({profile.corePhotos?.length || 0})
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.tab, activeTab === 'daily' && styles.tabActive]}
+                onPress={() => setActiveTab('daily')}
+              >
+                <Text style={[styles.tabText, activeTab === 'daily' && styles.tabTextActive]}>
+                  ☀️ Bugün ({profile.dailyPhotos?.length || 0})
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Unlock Cost Info */}
             <Text style={styles.photoHint}>
-              Fotoğrafları görmek için {PHOTO_UNLOCK_COST} jeton harcanır
+              {activeTab === 'core' 
+                ? `Profil fotoğrafları: ${profile.unlockCosts?.core || 5} elmas`
+                : `Günlük fotoğraflar: ${profile.unlockCosts?.daily || 3} elmas`
+              }
             </Text>
+
+            {/* Photo Grid */}
             <View style={styles.photoGrid}>
-              {profile.profilePhotos.map((photo) => (
+              {(activeTab === 'core' ? profile.corePhotos : profile.dailyPhotos)?.map((photo) => (
                 <BlurredPhoto
                   key={photo.id}
                   photoId={photo.id}
-                  photoUrl={photo.url}
+                  photoUrl={getPhotoUrl(photo.url)}
                   caption={photo.caption}
                   hasCaption={photo.hasCaption}
                   isUnlocked={photo.isUnlocked}
-                  unlockCost={PHOTO_UNLOCK_COST}
+                  unlockCost={photo.unlockCost}
                   userBalance={userBalance}
                   onUnlock={handleUnlockPhoto}
                   onPurchaseTokens={handlePurchaseTokens}
@@ -285,6 +338,16 @@ const FriendProfileScreen: React.FC<Props> = ({ route, navigation }) => {
                 />
               ))}
             </View>
+
+            {/* Empty State */}
+            {((activeTab === 'core' && !profile.corePhotos?.length) ||
+              (activeTab === 'daily' && !profile.dailyPhotos?.length)) && (
+              <Text style={styles.emptyState}>
+                {activeTab === 'core' 
+                  ? 'Henüz profil fotoğrafı yok.'
+                  : 'Bugün fotoğraf paylaşmamış.'}
+              </Text>
+            )}
           </View>
         )}
 
@@ -335,7 +398,7 @@ const FriendProfileScreen: React.FC<Props> = ({ route, navigation }) => {
             onPress={() => navigation.navigate('FriendChat', {
               friendshipId: profile.friendshipId,
               friendNickname: profile.nickname,
-              friendPhoto: currentPhoto,
+              friendPhoto: profile.profilePhotos?.[0]?.isUnlocked ? profile.profilePhotos[0].url : undefined,
               friendOnline: profile.isOnline,
               friendId: profile.id,
             })}
@@ -403,6 +466,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginVertical: SPACING.md,
   },
+  profilePhoto: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    marginVertical: SPACING.md,
+    borderWidth: 3,
+    borderColor: '#FFD700', // Prime sarı rengi
+  },
   avatarEmoji: {
     fontSize: 60,
   },
@@ -410,6 +481,31 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: SPACING.xs,
     marginTop: SPACING.sm,
+  },
+  // Tabs
+  tabs: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.surface,
+    borderRadius: 12,
+    padding: 4,
+    marginBottom: SPACING.sm,
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: SPACING.sm,
+    alignItems: 'center',
+    borderRadius: 10,
+  },
+  tabActive: {
+    backgroundColor: COLORS.primary,
+  },
+  tabText: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+  },
+  tabTextActive: {
+    color: COLORS.text,
+    fontWeight: '600',
   },
   // Photo Grid
   photoGridSection: {
@@ -430,6 +526,12 @@ const styles = StyleSheet.create({
   gridPhoto: {
     width: PHOTO_SIZE,
     height: PHOTO_SIZE,
+  },
+  emptyState: {
+    ...FONTS.body,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+    paddingVertical: SPACING.xl,
   },
   badge: {
     flexDirection: 'row',

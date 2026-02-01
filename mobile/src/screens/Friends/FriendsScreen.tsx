@@ -450,6 +450,7 @@ const FriendsScreen: React.FC<Props> = ({ navigation }) => {
               <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
             }
             renderItem={renderFriend}
+            contentContainerStyle={{ paddingBottom: 20 }}
           />
         )
       ) : requests.length === 0 ? (
@@ -467,6 +468,7 @@ const FriendsScreen: React.FC<Props> = ({ navigation }) => {
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }
           renderItem={renderRequest}
+          contentContainerStyle={{ paddingBottom: 20 }}
         />
       )}
 

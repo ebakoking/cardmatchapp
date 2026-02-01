@@ -50,34 +50,37 @@ const BlurredPhoto: React.FC<BlurredPhotoProps> = ({
   caption,
   hasCaption,
   isUnlocked,
-  unlockCost,
-  userBalance,
+  unlockCost = 5, // Default 5 elmas
+  userBalance = 0,
   onUnlock,
   onPurchaseTokens,
   style,
 }) => {
+  // NaN koruması
+  const safeCost = Number.isNaN(unlockCost) ? 5 : unlockCost;
+  const safeBalance = Number.isNaN(userBalance) ? 0 : userBalance;
   const [unlocking, setUnlocking] = useState(false);
   const [showUnlockModal, setShowUnlockModal] = useState(false);
-  const [localUnlocked, setLocalUnlocked] = useState(isUnlocked);
-  const [localCaption, setLocalCaption] = useState(caption);
+  const [showFullscreenModal, setShowFullscreenModal] = useState(false);
 
   const handlePress = () => {
-    if (localUnlocked) {
-      // Fotoğraf zaten açık - tam ekran görüntüleme yapılabilir
+    if (isUnlocked) {
+      // Fotoğraf açık - tam ekran görüntüleme
+      setShowFullscreenModal(true);
       return;
     }
     setShowUnlockModal(true);
   };
 
   const handleUnlock = async () => {
-    if (userBalance < unlockCost) {
+    if (safeBalance < safeCost) {
       setShowUnlockModal(false);
       Alert.alert(
-        'Yetersiz Jeton',
-        `Bu fotoğrafı açmak için ${unlockCost} jeton gerekiyor. Şu an ${userBalance} jetonun var.`,
+        'Yetersiz Elmas',
+        `Bu fotoğrafı açmak için ${safeCost} elmas gerekiyor. Şu an ${safeBalance} elmasın var.`,
         [
           { text: 'İptal', style: 'cancel' },
-          { text: 'Jeton Satın Al', onPress: onPurchaseTokens },
+          { text: 'Elmas Satın Al', onPress: onPurchaseTokens },
         ]
       );
       return;
@@ -87,8 +90,8 @@ const BlurredPhoto: React.FC<BlurredPhotoProps> = ({
       setUnlocking(true);
       const success = await onUnlock(photoId);
       if (success) {
-        setLocalUnlocked(true);
-        // Caption will be updated via parent component's state update
+        // Parent component will update isUnlocked prop
+        setShowFullscreenModal(true); // Hemen tam ekran göster
       }
     } finally {
       setUnlocking(false);
@@ -96,81 +99,64 @@ const BlurredPhoto: React.FC<BlurredPhotoProps> = ({
     }
   };
 
-  // Sync with prop changes (when parent updates caption after unlock)
-  React.useEffect(() => {
-    if (caption !== localCaption) {
-      setLocalCaption(caption);
-    }
-  }, [caption]);
-
-  React.useEffect(() => {
-    if (isUnlocked !== localUnlocked) {
-      setLocalUnlocked(isUnlocked);
-    }
-  }, [isUnlocked]);
-
   return (
     <>
       <TouchableOpacity
         style={[styles.container, style]}
         onPress={handlePress}
-        activeOpacity={localUnlocked ? 1 : 0.8}
+        activeOpacity={isUnlocked ? 1 : 0.8}
         disabled={unlocking}
       >
-        <Image source={{ uri: photoUrl }} style={styles.photo} />
-        
-        {/* Blur overlay - BlurView varsa kullan, yoksa fallback */}
-        {!localUnlocked && (
-          BlurView ? (
-            <BlurView intensity={80} style={styles.blurOverlay} tint="dark">
-              <View style={styles.lockContent}>
+        {/* KİLİTLİ: Fotoğrafı hiç yükleme/gösterme - sadece placeholder */}
+        {!isUnlocked ? (
+          <View style={styles.lockedPlaceholder}>
+            <View style={styles.lockContent}>
+              {/* İkon container - relative position için wrapper */}
+              <View style={styles.iconWrapper}>
                 <View style={styles.lockIconContainer}>
-                  <Ionicons name="lock-closed" size={28} color={COLORS.text} />
+                  <Ionicons name="image" size={32} color={COLORS.textMuted} />
                 </View>
-                <View style={styles.costBadge}>
-                  <Ionicons name="diamond" size={14} color={COLORS.accent} />
-                  <Text style={styles.costText}>{unlockCost}</Text>
+                <View style={styles.lockIconSmall}>
+                  <Ionicons name="lock-closed" size={14} color={COLORS.text} />
                 </View>
-                <Text style={styles.tapToUnlock}>Açmak için dokun</Text>
-                {/* Caption indicator when locked */}
-                {hasCaption && (
-                  <View style={styles.lockedCaptionHint}>
-                    <Ionicons name="chatbubble-ellipses" size={12} color={COLORS.textMuted} />
-                    <Text style={styles.lockedCaptionText}>Açıklama var</Text>
-                  </View>
-                )}
               </View>
-            </BlurView>
-          ) : (
-            <FallbackBlurOverlay>
-              <View style={styles.lockContent}>
-                <View style={styles.lockIconContainer}>
-                  <Ionicons name="lock-closed" size={28} color={COLORS.text} />
-                </View>
-                <View style={styles.costBadge}>
-                  <Ionicons name="diamond" size={14} color={COLORS.accent} />
-                  <Text style={styles.costText}>{unlockCost}</Text>
-                </View>
-                <Text style={styles.tapToUnlock}>Açmak için dokun</Text>
-                {/* Caption indicator when locked */}
-                {hasCaption && (
-                  <View style={styles.lockedCaptionHint}>
-                    <Ionicons name="chatbubble-ellipses" size={12} color={COLORS.textMuted} />
-                    <Text style={styles.lockedCaptionText}>Açıklama var</Text>
-                  </View>
-                )}
+              <View style={styles.costBadge}>
+                <Ionicons name="diamond" size={14} color={COLORS.accent} />
+                <Text style={styles.costText}>{safeCost}</Text>
               </View>
-            </FallbackBlurOverlay>
-          )
-        )}
-
-        {/* Caption (sadece açık fotoğraflarda) */}
-        {localUnlocked && localCaption && (
-          <View style={styles.captionContainer}>
-            <Text style={styles.captionText} numberOfLines={2}>
-              {localCaption}
-            </Text>
+              <Text style={styles.tapToUnlock}>Açmak için dokun</Text>
+              {/* Caption indicator when locked */}
+              {hasCaption && (
+                <View style={styles.lockedCaptionHint}>
+                  <Ionicons name="chatbubble-ellipses" size={12} color={COLORS.textMuted} />
+                  <Text style={styles.lockedCaptionText}>Açıklama var</Text>
+                </View>
+              )}
+            </View>
           </View>
+        ) : (
+          /* AÇIK: Gerçek fotoğrafı göster */
+          <>
+            {photoUrl ? (
+              <Image source={{ uri: photoUrl }} style={styles.photo} />
+            ) : (
+              <View style={[styles.photo, { backgroundColor: '#333' }]} />
+            )}
+            
+            {/* Caption (sadece açık fotoğraflarda - küçük görünüm) */}
+            {caption && (
+              <View style={styles.captionContainer}>
+                <Text style={styles.captionText} numberOfLines={2}>
+                  {caption}
+                </Text>
+              </View>
+            )}
+            
+            {/* Açık fotoğraf ikonu */}
+            <View style={styles.unlockedBadge}>
+              <Ionicons name="expand" size={16} color={COLORS.text} />
+            </View>
+          </>
         )}
       </TouchableOpacity>
 
@@ -193,18 +179,18 @@ const BlurredPhoto: React.FC<BlurredPhotoProps> = ({
             
             <Text style={styles.modalTitle}>Fotoğrafı Aç</Text>
             <Text style={styles.modalDescription}>
-              Bu fotoğrafı görmek için {unlockCost} jeton harcayacaksın.
+              Bu fotoğrafı görmek için {safeCost} elmas harcayacaksın.
             </Text>
             
             <View style={styles.balanceRow}>
               <Text style={styles.balanceLabel}>Bakiyen:</Text>
               <View style={styles.balanceValue}>
                 <Ionicons name="diamond" size={16} color={COLORS.accent} />
-                <Text style={styles.balanceText}>{userBalance}</Text>
+                <Text style={styles.balanceText}>{safeBalance}</Text>
               </View>
             </View>
 
-            {userBalance >= unlockCost ? (
+            {safeBalance >= safeCost ? (
               <TouchableOpacity
                 style={styles.unlockButton}
                 onPress={handleUnlock}
@@ -216,7 +202,7 @@ const BlurredPhoto: React.FC<BlurredPhotoProps> = ({
                   <>
                     <Ionicons name="lock-open" size={18} color={COLORS.background} />
                     <Text style={styles.unlockButtonText}>
-                      {unlockCost} Jeton ile Aç
+                      {safeCost} Elmas ile Aç
                     </Text>
                   </>
                 )}
@@ -225,7 +211,7 @@ const BlurredPhoto: React.FC<BlurredPhotoProps> = ({
               <>
                 <View style={styles.insufficientBadge}>
                   <Text style={styles.insufficientText}>
-                    {unlockCost - userBalance} jeton daha gerekli
+                    {safeCost - safeBalance} elmas daha gerekli
                   </Text>
                 </View>
                 <TouchableOpacity
@@ -236,7 +222,7 @@ const BlurredPhoto: React.FC<BlurredPhotoProps> = ({
                   }}
                 >
                   <Ionicons name="add-circle" size={18} color={COLORS.text} />
-                  <Text style={styles.purchaseButtonText}>Jeton Satın Al</Text>
+                  <Text style={styles.purchaseButtonText}>Elmas Satın Al</Text>
                 </TouchableOpacity>
               </>
             )}
@@ -249,6 +235,42 @@ const BlurredPhoto: React.FC<BlurredPhotoProps> = ({
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
+      </Modal>
+
+      {/* Fullscreen Photo Modal (açılmış fotoğraflar için) */}
+      <Modal
+        visible={showFullscreenModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowFullscreenModal(false)}
+      >
+        <View style={styles.fullscreenOverlay}>
+          {/* Kapat butonu */}
+          <TouchableOpacity
+            style={styles.fullscreenCloseButton}
+            onPress={() => setShowFullscreenModal(false)}
+          >
+            <Ionicons name="close" size={28} color={COLORS.text} />
+          </TouchableOpacity>
+
+          {/* Büyük fotoğraf */}
+          {photoUrl ? (
+            <Image
+              source={{ uri: photoUrl }}
+              style={styles.fullscreenPhoto}
+              resizeMode="contain"
+            />
+          ) : (
+            <View style={[styles.fullscreenPhoto, { backgroundColor: '#333' }]} />
+          )}
+
+          {/* Caption (varsa) */}
+          {caption && (
+            <View style={styles.fullscreenCaptionContainer}>
+              <Text style={styles.fullscreenCaptionText}>{caption}</Text>
+            </View>
+          )}
+        </View>
       </Modal>
     </>
   );
@@ -276,9 +298,35 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  // Kilitli fotoğraf placeholder - fotoğrafı hiç yüklemeden gösterilir
+  lockedPlaceholder: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: COLORS.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    // Gradient efekt için
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  lockIconSmall: {
+    position: 'absolute',
+    top: -8,
+    right: -8,
+    backgroundColor: COLORS.primary,
+    borderRadius: 12,
+    width: 24,
+    height: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   lockContent: {
     alignItems: 'center',
     gap: SPACING.sm,
+  },
+  iconWrapper: {
+    position: 'relative',
+    marginBottom: SPACING.xs,
   },
   lockIconContainer: {
     width: 56,
@@ -435,6 +483,55 @@ const styles = StyleSheet.create({
   cancelButtonText: {
     ...FONTS.body,
     color: COLORS.textMuted,
+  },
+  // Açılmış fotoğraf badge
+  unlockedBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    borderRadius: 14,
+    width: 28,
+    height: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  // Fullscreen modal styles
+  fullscreenOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fullscreenCloseButton: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 60 : 40,
+    right: 20,
+    zIndex: 10,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 20,
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fullscreenPhoto: {
+    width: '100%',
+    height: '70%',
+  },
+  fullscreenCaptionContainer: {
+    position: 'absolute',
+    bottom: Platform.OS === 'ios' ? 80 : 60,
+    left: 20,
+    right: 20,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    padding: SPACING.md,
+    borderRadius: 12,
+  },
+  fullscreenCaptionText: {
+    color: COLORS.text,
+    fontSize: 16,
+    textAlign: 'center',
   },
 });
 

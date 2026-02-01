@@ -156,6 +156,7 @@ router.post('/verify-otp', validateBody(verifyOtpSchema), async (req, res) => {
   // Kullanıcıyı bul veya oluştur
   let user = await prisma.user.findUnique({ where: { phoneNumber } });
   let isNewUser = false;
+  let wasReactivated = false;
   
   if (!user) {
     isNewUser = true;
@@ -169,9 +170,32 @@ router.post('/verify-otp', validateBody(verifyOtpSchema), async (req, res) => {
         city: 'Istanbul',
         country: 'TR',
         authProvider: 'phone',
+        profileComplete: false,
+        onboardingStep: 1,
       },
     });
     console.log(`[Auth] New phone user created: ${user.id}`);
+  } else {
+    // Dondurulmuş hesap kontrolü - otomatik aktifleştir
+    if (user.status === 'FROZEN') {
+      user = await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          status: 'ACTIVE',
+          frozenAt: null,
+        },
+      });
+      wasReactivated = true;
+      console.log(`[Auth] Frozen account reactivated: ${user.id}`);
+    }
+    
+    // Banned hesap kontrolü
+    if (user.status === 'BANNED') {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'ACCOUNT_BANNED', message: 'Bu hesap askıya alınmış.' },
+      });
+    }
   }
 
   // Token çifti oluştur
@@ -184,7 +208,9 @@ router.post('/verify-otp', validateBody(verifyOtpSchema), async (req, res) => {
       refreshToken,
       user: sanitizeUser(user),
       isNewUser,
+      wasReactivated,
       isProfileComplete: isProfileComplete(user),
+      onboardingStep: user.onboardingStep || 1,
     },
   });
 });
@@ -555,6 +581,11 @@ router.post('/logout', async (req, res) => {
   return res.json({ success: true, message: 'Çıkış yapıldı.' });
 });
 
+// ============ /me RATE LIMITING ============
+// User başına son istek zamanını tut
+const meRateLimitMap = new Map<string, number>();
+const ME_RATE_LIMIT_MS = 2000; // 2 saniye - aynı user 2 saniyede 1'den fazla istek yapamaz
+
 /**
  * GET /api/auth/me
  * Mevcut kullanıcı bilgisi
@@ -573,7 +604,29 @@ router.get('/me', async (req, res) => {
   
   try {
     const decoded = verifyAccessToken(token);
-    const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
+    
+    // 🚨 RATE LIMIT CHECK - Aşırı istek spam'ini engelle
+    const userId = decoded.userId;
+    const now = Date.now();
+    const lastRequest = meRateLimitMap.get(userId) || 0;
+    
+    if (now - lastRequest < ME_RATE_LIMIT_MS) {
+      // Çok sık istek - 304 döndür (değişmedi)
+      // Log'u kaldırdık çünkü spam yapıyor
+      return res.status(304).end();
+    }
+    
+    meRateLimitMap.set(userId, now);
+    console.log(`[Auth] /me request processed for user ${userId}`);
+    
+    const user = await prisma.user.findUnique({ 
+      where: { id: decoded.userId },
+      include: {
+        profilePhotos: {
+          orderBy: { order: 'asc' },
+        },
+      },
+    });
     
     if (!user) {
       return res.status(404).json({
@@ -582,11 +635,29 @@ router.get('/me', async (req, res) => {
       });
     }
     
+    // Frozen hesap kontrolü
+    if (user.status === 'FROZEN') {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'ACCOUNT_FROZEN', message: 'Hesabın dondurulmuş. Tekrar giriş yaparak aktifleştirebilirsin.' },
+      });
+    }
+    
+    // Banned hesap kontrolü
+    if (user.status === 'BANNED') {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'ACCOUNT_BANNED', message: 'Bu hesap askıya alınmış.' },
+      });
+    }
+    
     return res.json({
       success: true,
       data: {
         user: sanitizeUser(user),
-        isProfileComplete: isProfileComplete(user),
+        isProfileComplete: user.profileComplete || isProfileComplete(user),
+        onboardingStep: user.onboardingStep || 1,
+        status: user.status,
       },
     });
   } catch (error: any) {

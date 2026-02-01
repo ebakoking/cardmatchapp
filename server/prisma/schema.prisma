@@ -28,6 +28,7 @@ enum VerificationStatus {
 
 enum UserStatus {
   ACTIVE
+  FROZEN       // Kullanıcı hesabını dondurdu - aynı telefonla tekrar giriş yapınca aktifleşir
   SHADOWBANNED
   BANNED
 }
@@ -38,6 +39,20 @@ enum CardCategory {
   INTERESTS
   PERSONALITY
   HUMOR
+}
+
+enum QuestionCategory {
+  RELATIONSHIPS  // İlişkiler
+  HOBBIES        // Hobiler
+  VALUES         // Değerler
+  LIFESTYLE      // Yaşam Tarzı
+  FUTURE_PLANS   // Gelecek Planları
+}
+
+enum QuestionDifficulty {
+  EASY
+  MEDIUM
+  HARD
 }
 
 enum ReportCategory {
@@ -101,6 +116,11 @@ model User {
   refreshToken           String?
   refreshTokenExp        DateTime?
   
+  // ============ ONBOARDING DURUMU ============
+  profileComplete        Boolean       @default(false)  // Profil tamamlandı mı?
+  onboardingStep         Int           @default(1)      // Kaldığı onboarding adımı (1-3)
+  frozenAt               DateTime?                       // Hesap ne zaman donduruldu
+  
   // ============ PROFİL ALANLARI ============
   nickname               String        @unique
   age                    Int
@@ -114,6 +134,7 @@ model User {
   latitude               Float?        // Konum - enlem
   longitude              Float?        // Konum - boylam
   avatarId               Int           @default(1)  // 1-8 arası varsayılan avatar
+  profilePhotoUrl        String?                    // Prime üyeler için özel profil fotoğrafı
   profilePhotos          Photo[]
   verificationVideoUrl   String?
   verified               Boolean       @default(false)
@@ -134,10 +155,26 @@ model User {
   monthlySparksEarned    Int           @default(0)  // Medya açılmasından kazanılan sparklar (leaderboard için)
   totalSparksEarned      Int           @default(0)  // Toplam kazanılan sparklar (lifetime)
   monthlyResetAt         DateTime      @default(now()) // Son aylık sıfırlama tarihi
+  
+  // ============ GÜNLÜK ÖDÜL SİSTEMİ ============
+  lastDailyRewardAt      DateTime?                       // Son günlük ödül alma zamanı
+  currentStreak          Int           @default(0)       // Mevcut ardışık giriş sayısı
+  longestStreak          Int           @default(0)       // En uzun ardışık giriş
+  
+  // ============ BOOST SİSTEMİ ============
+  isBoostActive          Boolean       @default(false)  // Boost aktif mi
+  boostExpiresAt         DateTime?                       // Boost bitiş tarihi
+  boostCount             Int           @default(0)       // Toplam kullanılan boost sayısı
+  
+  // ============ ÖZEL ETKİNLİK ERİŞİMİ ============
+  hasEventAccess         Boolean       @default(false)  // Özel etkinlik erişim hakkı
+  eventAccessGrantedAt   DateTime?                       // Erişim verilme tarihi
+  eventAccessExpiresAt   DateTime?                       // Erişim bitiş tarihi (opsiyonel)
   dailyChatsStarted      Int           @default(0)   // Bugün başlatılan sohbet sayısı
   dailyChatsResetAt      DateTime      @default(now()) // Günlük sıfırlama tarihi
   status                 UserStatus    @default(ACTIVE)
   reportCount            Int           @default(0)
+  positiveRatings        Int           @default(0)  // İyi kullanıcı beğeni sayısı
   isOnline               Boolean       @default(false)
   lastSeenAt             DateTime?
   expoPushToken          String?
@@ -168,19 +205,27 @@ model User {
   rewardClaims           RewardClaim[]
 }
 
+enum PhotoType {
+  CORE    // Kalıcı profil fotoğrafları (max 6)
+  DAILY   // Günlük fotoğraflar (günde max 3)
+}
+
 model Photo {
-  id        String  @id @default(uuid())
+  id        String    @id @default(uuid())
   userId    String
   url       String
   order     Int
-  approved  Boolean @default(false)
-  caption   String? @db.VarChar(150)  // Fotoğraf açıklaması
-  createdAt DateTime @default(now())
+  type      PhotoType @default(CORE)  // core veya daily
+  approved  Boolean   @default(false)
+  caption   String?   @db.VarChar(80)  // Fotoğraf açıklaması (max 80 char)
+  createdAt DateTime  @default(now())
 
   user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   unlocks   PhotoUnlock[]
 
   @@index([userId])
+  @@index([userId, type])  // Tip bazlı sorgular için
+  @@index([userId, type, createdAt])  // Günlük foto sorguları için
 }
 
 // Fotoğraf açma kayıtları (hangi kullanıcı hangi fotoğrafı açtı)
@@ -224,12 +269,108 @@ model VerificationVideo {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
+// ============ SELFİE DOĞRULAMA SİSTEMİ ============
+enum VerificationPose {
+  THUMBS_UP          // Başparmak yukarı
+  PEACE_SIGN         // V işareti
+  WAVE_HAND          // El sallama
+  POINT_UP           // Yukarı işaret
+  OK_SIGN            // OK işareti
+}
+
+model VerificationRequest {
+  id              String             @id @default(uuid())
+  userId          String
+  pose            VerificationPose   // İstenen poz
+  selfieUrl       String             // Yüklenen selfie URL
+  status          VerificationStatus @default(PENDING)
+  reviewedBy      String?            // Admin ID
+  reviewNote      String?            // Admin notu (red sebebi vb.)
+  reviewedAt      DateTime?
+  createdAt       DateTime           @default(now())
+  
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
 model Card {
   id          String       @id @default(uuid())
   questionTR  String
   category    CardCategory
   optionsJson String       // JSON stringified array of 4 options
   createdAt   DateTime     @default(now())
+}
+
+// ============ YENİ SORU SİSTEMİ ============
+
+model Question {
+  id          String             @id @default(uuid())
+  text        String             // Soru metni
+  category    QuestionCategory
+  difficulty  QuestionDifficulty @default(MEDIUM)
+  usageCount  Int                @default(0)  // Kaç kez soruldu
+  isActive    Boolean            @default(true)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  answers     Answer[]
+  userAnswers UserAnswer[]
+
+  @@index([category])
+  @@index([usageCount])
+  @@index([isActive])
+}
+
+model Answer {
+  id              String   @id @default(uuid())
+  questionId      String
+  text            String   // Cevap metni
+  value           Int      // 1-4 arası değer (A=1, B=2, C=3, D=4)
+  personalityTrait String? // Opsiyonel: ROMANTIC, ADVENTUROUS, HOMEBODY vb.
+  createdAt       DateTime @default(now())
+
+  question        Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  userAnswers     UserAnswer[]
+
+  @@index([questionId])
+}
+
+model UserAnswer {
+  id          String   @id @default(uuid())
+  userId      String
+  questionId  String
+  answerId    String
+  matchId     String   // Hangi match için cevaplandı
+  createdAt   DateTime @default(now())
+
+  question    Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  answer      Answer   @relation(fields: [answerId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, questionId, matchId])  // Aynı matchte aynı soruya 1 cevap
+  @@index([userId])
+  @@index([matchId])
+  @@index([questionId])
+}
+
+// Match kartları için oyun durumu (real-time sync için)
+model MatchCardGame {
+  id              String   @id @default(uuid())
+  matchId         String   @unique
+  user1Id         String
+  user2Id         String
+  questionIds     String[] // 5 soru ID'si
+  user1Progress   Int      @default(0)  // 0-5 arası
+  user2Progress   Int      @default(0)  // 0-5 arası
+  user1Completed  Boolean  @default(false)
+  user2Completed  Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  expiresAt       DateTime // Timeout için
+
+  @@index([matchId])
+  @@index([user1Id])
+  @@index([user2Id])
 }
 
 model Match {
@@ -278,14 +419,6 @@ model ChatSession {
   user2MessageCount  Int         @default(0)
   endedAt            DateTime?
   endReason          ChatEndReason?
-  
-  // Ücretsiz medya hakları (her kullanıcı için ilk medya ücretsiz)
-  user1FreeVoiceUsed  Boolean    @default(false)
-  user1FreePhotoUsed  Boolean    @default(false)
-  user1FreeVideoUsed  Boolean    @default(false)
-  user2FreeVoiceUsed  Boolean    @default(false)
-  user2FreePhotoUsed  Boolean    @default(false)
-  user2FreeVideoUsed  Boolean    @default(false)
 
   match              Match       @relation(fields: [matchId], references: [id], onDelete: Cascade)
   messages           Message[]
@@ -302,10 +435,11 @@ model Message {
   mediaType     String?     // 'photo' | 'video' | 'voice'
   messageType   MessageType @default(TEXT)  // TEXT, MEDIA, TOKEN_GIFT, SYSTEM
   tokenAmount   Int?        // TOKEN_GIFT için hediye edilen miktar
-  viewTokenCost Int?        // Görüntüleme maliyeti (fotoğraf: 5, video: 10)
+  locked        Boolean     @default(false) // Medya kilitli mi? (açmak için token gerek)
+  isFirstFree   Boolean     @default(false) // Bu gönderenin ilk medyası mı? (ücretsiz)
+  mediaPrice    Int         @default(0)     // Açma maliyeti (photo:20, video:50, audio:5)
   viewedBy      String?     // Görüntüleyen kullanıcı ID
   viewedAt      DateTime?   // Görüntülenme zamanı
-  wasFreeView   Boolean     @default(false) // Ücretsiz hak kullanıldı mı
   createdAt     DateTime    @default(now())
 
   chatSession   ChatSession @relation(fields: [chatSessionId], references: [id], onDelete: Cascade)
@@ -414,6 +548,9 @@ model FriendChatMessage {
   content      String?
   mediaUrl     String?
   mediaType    String?
+  locked       Boolean     @default(false) // Medya kilitli mi?
+  isFirstFree  Boolean     @default(false) // Bu gönderenin ilk medyası mı?
+  mediaPrice   Int         @default(0)     // Açma maliyeti
   readAt       DateTime?   // Mesaj okunduğunda set edilir
   createdAt    DateTime    @default(now())
 
@@ -491,5 +628,39 @@ model RewardClaim {
 
   @@index([userId])
   @@index([month])
+}
+
+// ============ AYLIK LİDERLİK TABLOSU ARŞİVİ ============
+model MonthlyLeaderboard {
+  id          String   @id @default(uuid())
+  userId      String
+  month       Int      // 1-12
+  year        Int      // 2024, 2025, vb.
+  sparkCount  Int      // O ayki spark sayısı
+  rank        Int      // Sıralama
+  hasEventAccess Boolean @default(false) // Etkinlik erişimi kazandı mı
+  createdAt   DateTime @default(now())
+
+  @@unique([userId, month, year])  // Her kullanıcı için ayda bir kayıt
+  @@index([month, year])
+  @@index([rank])
+}
+
+// ============ BOOST SATIN ALMA GEÇMİŞİ ============
+model BoostPurchase {
+  id            String   @id @default(uuid())
+  userId        String
+  tokenCost     Int      @default(0) // Eski sistem için (artık kullanılmıyor)
+  priceTL       Float?   // TL cinsinden fiyat (199.90)
+  durationHours Int      // Boost süresi (saat)
+  activatedAt   DateTime @default(now())
+  expiresAt     DateTime
+  transactionId String?  @unique // App Store / Play Store transaction ID
+  purchaseToken String?  // IAP purchase token
+  createdAt     DateTime @default(now())
+
+  @@index([userId])
+  @@index([activatedAt])
+  @@index([transactionId])
 }
 

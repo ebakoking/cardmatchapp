@@ -147,7 +147,7 @@ router.post(
         success: false,
         error: {
           code: 'TOKEN_VALIDATION_CONFIG_MISSING',
-          message: 'Jeton satın alma doğrulama yapılandırılmamış.',
+          message: 'Elmas satın alma doğrulama yapılandırılmamış.',
         },
       });
     }
@@ -171,7 +171,7 @@ router.post(
         success: false,
         error: {
           code: 'TOKEN_PURCHASE_VALIDATION_FAILED',
-          message: 'Jeton satın alma doğrulanamadı.',
+          message: 'Elmas satın alma doğrulanamadı.',
         },
       });
     }

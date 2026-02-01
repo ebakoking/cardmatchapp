@@ -35,7 +35,7 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({
       s.off('connect');
       s.off('disconnect');
     };
-  }, [user]);
+  }, [user?.id]); // ÖNEMLİ: user yerine user?.id - her user değişiminde değil, sadece user.id değişiminde çalışsın
 
   return (
     <SocketContext.Provider value={{ socket, connected }}>

@@ -18,6 +18,11 @@ import uploadRouter from './routes/upload';
 import blockRouter from './routes/block';
 import reportRouter from './routes/report';
 import rewardsRouter from './routes/rewards';
+import boostRouter from './routes/boost';
+import mediaRouter from './routes/media';
+import verificationRouter from './routes/verification';
+import dailyRewardRouter from './routes/dailyReward';
+import { startCronJobs, runMonthlySparkReset, cleanupExpiredBoosts } from './jobs/monthlySparkReset';
 import { registerMatchmakingHandlers } from './socket/matchmaking';
 import { registerChatHandlers } from './socket/chat';
 import { registerFriendsHandlers } from './socket/friends';
@@ -44,14 +49,17 @@ app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev'));
 
-// Global basic rate limit
-app.use(
-  createRateLimiter({
-    windowMs: 60_000,
-    max: 120,
-    messageCode: 'GLOBAL_RATE_LIMIT',
-  }),
-);
+// Global basic rate limit (development için devre dışı bırakıldı)
+// Production'da aktifleştir
+if (process.env.NODE_ENV === 'production') {
+  app.use(
+    createRateLimiter({
+      windowMs: 60_000,
+      max: 200,
+      messageCode: 'GLOBAL_RATE_LIMIT',
+    }),
+  );
+}
 
 // Static files (uploads klasörü)
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
@@ -68,6 +76,10 @@ app.use('/api/upload', uploadRouter);
 app.use('/api/user', blockRouter);
 app.use('/api/user', reportRouter);
 app.use('/api/rewards', rewardsRouter);
+app.use('/api/boost', boostRouter);
+app.use('/api/media', mediaRouter);
+app.use('/api/verification', verificationRouter);
+app.use('/api/daily-reward', dailyRewardRouter);
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
@@ -98,10 +110,35 @@ io.on('connection', (socket) => {
   registerFriendsHandlers(io, socket);
 });
 
+// Admin endpoint: Manuel aylık spark reset (test için)
+app.post('/api/admin/spark-reset', async (req, res) => {
+  try {
+    const result = await runMonthlySparkReset();
+    res.json({ success: true, data: result });
+  } catch (error) {
+    console.error('Manual spark reset error:', error);
+    res.status(500).json({ success: false, error: 'Spark reset failed' });
+  }
+});
+
+// Admin endpoint: Boost cleanup (test için)
+app.post('/api/admin/boost-cleanup', async (req, res) => {
+  try {
+    const count = await cleanupExpiredBoosts();
+    res.json({ success: true, data: { expiredBoostsDeactivated: count } });
+  } catch (error) {
+    console.error('Boost cleanup error:', error);
+    res.status(500).json({ success: false, error: 'Boost cleanup failed' });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(`Server listening on port ${PORT}`);
+  
+  // Cron job'ları başlat
+  startCronJobs();
 });
 

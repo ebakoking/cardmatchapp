@@ -12,24 +12,24 @@ type Props = NativeStackScreenProps<AuthStackParamList, 'Tutorial'>;
 
 const slides = [
   {
-    emoji: '💬',
-    title: 'Eşleşmek için',
-    text: "Ana sayfadaki 'EŞLEŞME BUL' butonuna bas ve eşleşme kuyruğuna gir.",
+    emoji: '🎯',
+    title: 'Eşleşmeye Gir',
+    text: 'Benzer cevaplar veren biriyle eşleş.',
   },
   {
     emoji: '🃏',
     title: 'Kartları Cevapla',
-    text: 'Kartları cevapla, ortak ilgi alanlarınız varsa sohbet başlar.',
+    text: 'En az 2 kart uyuşursa sohbet açılır.',
   },
   {
-    emoji: '📸',
-    title: 'Aşamalı Tanışma',
-    text: 'Sohbet ilerledikçe fotoğraf, video ve arama özellikleri açılır.',
+    emoji: '💬',
+    title: 'Aşamalı Tanış',
+    text: 'Önce sohbet. Sonra ses, fotoğraf ve video.',
   },
   {
-    emoji: '🌟',
+    emoji: '✨',
     title: 'Spark Kazan',
-    text: 'Medya paylaşımlarından Spark kazan, liderlik tablosunda yüksel!',
+    text: 'Paylaşımların açıldıkça Spark kazanırsın.',
   },
 ];
 
@@ -111,7 +111,7 @@ const TutorialScreen: React.FC<Props> = () => {
         disabled={isFinishing}
       >
         <Text style={styles.buttonText}>
-          {isFinishing ? 'Yükleniyor...' : isLast ? '🚀 Başlayalım!' : 'Devam →'}
+          {isFinishing ? 'Yükleniyor...' : isLast ? '🚀 Eşleşmeye Başla' : 'Devam'}
         </Text>
       </TouchableOpacity>
     </SafeAreaView>
@@ -126,10 +126,13 @@ const styles = StyleSheet.create({
   },
   skipButton: {
     alignSelf: 'flex-end',
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.md,
   },
   skipText: {
-    ...FONTS.body,
+    fontSize: 14,
     color: COLORS.textMuted,
+    opacity: 0.6,
   },
   slide: {
     flex: 1,
@@ -138,20 +141,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.xl,
   },
   emoji: {
-    fontSize: 80,
-    marginBottom: SPACING.xl,
+    fontSize: 72,
+    marginBottom: SPACING.lg,
   },
   title: {
     ...FONTS.h1,
     color: COLORS.text,
     textAlign: 'center',
+    marginBottom: SPACING.sm,
   },
   text: {
-    ...FONTS.body,
-    color: COLORS.textMuted,
+    fontSize: 16,
+    color: COLORS.textSecondary,
     textAlign: 'center',
-    marginTop: SPACING.md,
-    lineHeight: 24,
+    lineHeight: 22,
   },
   dots: {
     flexDirection: 'row',

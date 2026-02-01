@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
-import { api } from '../services/api';
+import { api, resetAuthMeThrottle } from '../services/api';
 import { getSocket, joinUserRoom, leaveUserRoom } from '../services/socket';
 
 // ============ USER INTERFACE ============
@@ -35,7 +35,9 @@ export interface User {
   totalSparksEarned: number;
   dailyChatsStarted?: number;
   isOnline: boolean;
-  profilePhotos?: Array<{ id: string; url: string; order: number }>;
+  avatarId?: number;
+  profilePhotoUrl?: string; // Prime için özel profil fotoğrafı
+  profilePhotos?: Array<{ id: string; url: string; order: number; type?: 'CORE' | 'DAILY'; caption?: string }>;
 }
 
 // ============ CONTEXT INTERFACE ============
@@ -64,7 +66,17 @@ const STORAGE_KEYS = {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
+// Render counter - AuthProvider kaç kez render oluyor?
+let authProviderRenderCount = 0;
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  authProviderRenderCount++;
+  
+  // 🔴 Her 10 render'da bir log at
+  if (authProviderRenderCount % 10 === 1) {
+    console.log(`🔴 AUTH PROVIDER V5 - render #${authProviderRenderCount}`);
+  }
+  
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -72,6 +84,93 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   
   // Token refresh lock (çift refresh önleme)
   const isRefreshing = useRef(false);
+  // Logout işlemi sırasında state güncellemelerini engelle
+  const isLoggingOut = useRef(false);
+  // refreshProfile throttle - aşırı çağrıları engelle
+  const lastRefreshTime = useRef(0);
+  const isRefreshingProfile = useRef(false);
+  const refreshCallCount = useRef(0); // Debug: kaç kez çağrıldı
+  
+  // ============ BALANCE PROTECTION SYSTEM ============
+  // Balance değişikliklerini track etmek için rev (version) sistemi
+  const balanceRevRef = useRef<number>(0);
+  
+  // ============ setUserSafe - TÜM USER YAZMALARI BURADAN GEÇER ============
+  // preserveBalance: true = balance değerleri korunur (default)
+  // preserveBalance: false = balance dahil tüm alanlar güncellenir (sadece login/logout için)
+  const setUserSafe = useCallback((
+    updater: User | null | ((prev: User | null) => User | null),
+    source: string,
+    preserveBalance: boolean = true
+  ) => {
+    setUser((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      
+      // null set ediliyor (logout)
+      if (next === null) {
+        console.log(`[AuthContext] 👤 setUserSafe source=${source} -> null`);
+        return null;
+      }
+      
+      // İlk yükleme (prev null)
+      if (!prev) {
+        console.log(`[AuthContext] 👤 setUserSafe source=${source} -> FIRST LOAD, balance: ${next?.tokenBalance}`);
+        balanceRevRef.current = Date.now();
+        return next;
+      }
+      
+      // Balance korunacak mı?
+      if (preserveBalance) {
+        const result = {
+          ...next,
+          tokenBalance: prev.tokenBalance,
+          monthlySparksEarned: prev.monthlySparksEarned,
+          totalSparksEarned: prev.totalSparksEarned,
+        };
+        console.log(`[AuthContext] 👤 setUserSafe source=${source} BALANCE PRESERVED: ${prev.tokenBalance} (incoming was ${next.tokenBalance})`);
+        return result;
+      } else {
+        // Balance dahil tüm alanlar güncelleniyor
+        console.log(`[AuthContext] 👤 setUserSafe source=${source} FULL UPDATE: ${prev.tokenBalance} -> ${next.tokenBalance}`);
+        balanceRevRef.current = Date.now();
+        return next;
+      }
+    });
+  }, []);
+  
+  // Balance güncelleme fonksiyonu - SADECE BALANCE İÇİN
+  const applyBalance = useCallback((
+    incoming: { tokenBalance?: number; monthlySparksEarned?: number; totalSparksEarned?: number },
+    source: string
+  ) => {
+    const newRev = Date.now();
+    
+    // Boş payload ignore
+    if (incoming.tokenBalance === undefined && incoming.monthlySparksEarned === undefined) {
+      console.log(`[AuthContext] ⏭️ applyBalance SKIPPED (empty) - source: ${source}`);
+      return;
+    }
+    
+    setUser((prev) => {
+      if (!prev) return prev;
+      
+      const oldTokenBalance = prev.tokenBalance;
+      const newTokenBalance = incoming.tokenBalance ?? prev.tokenBalance;
+      
+      console.log(`[AuthContext] 💰 applyBalance - source: ${source}`);
+      console.log(`[AuthContext] 💰 tokenBalance: ${oldTokenBalance} -> ${newTokenBalance}`);
+      
+      // Rev'i güncelle
+      balanceRevRef.current = newRev;
+      
+      return {
+        ...prev,
+        tokenBalance: newTokenBalance,
+        monthlySparksEarned: incoming.monthlySparksEarned ?? prev.monthlySparksEarned,
+        totalSparksEarned: incoming.totalSparksEarned ?? prev.totalSparksEarned,
+      };
+    });
+  }, []);
 
   // ============ API INTERCEPTOR ============
   useEffect(() => {
@@ -122,17 +221,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     const loadStoredAuth = async () => {
       try {
-        // === DEV: Tüm eski oturum verilerini temizle (yeni auth sistemi için) ===
-        // Bu satırı production'da kaldır
-        const FORCE_CLEAR_AUTH = true; // Yeni auth sistemi için bir kerelik temizlik
+        // Auth version kontrolü - eski oturumları temizlemek için
+        // NOT: FORCE_CLEAR_AUTH sadece auth sistemi değiştiğinde true olmalı
+        const FORCE_CLEAR_AUTH = false; // Production için false
         const authVersion = await AsyncStorage.getItem('auth_version');
         
-        if (FORCE_CLEAR_AUTH && authVersion !== 'v2') {
+        if (FORCE_CLEAR_AUTH && authVersion !== 'v3') {
           console.log('[AuthContext] 🧹 Clearing old auth data for new system...');
           await SecureStore.deleteItemAsync(STORAGE_KEYS.ACCESS_TOKEN);
           await SecureStore.deleteItemAsync(STORAGE_KEYS.REFRESH_TOKEN);
           await AsyncStorage.removeItem('token');
-          await AsyncStorage.setItem('auth_version', 'v2');
+          await AsyncStorage.setItem('auth_version', 'v3');
           setLoading(false);
           return; // Temiz başla
         }
@@ -156,7 +255,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             });
             
             if (res.data.success && res.data.data.user) {
-              setUser(res.data.data.user);
+              // İlk yükleme - balance dahil tüm veriyi al (preserveBalance: false)
+              setUserSafe(res.data.data.user, 'loadStoredAuth', false);
               joinUserRoom(res.data.data.user.id);
               
               // Onboarding durumunu kontrol et
@@ -199,51 +299,47 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // User room'a katıl
     socket.emit('user:join', { userId: user.id });
 
-    // Gift events
+    // Gift events - applyBalance kullan
     const handleGiftReceived = (payload: { fromUserId: string; amount: number; fromNickname: string; newBalance: number; newSparks?: number }) => {
-      console.log('[AuthContext] Gift received:', payload);
-      setUser((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          tokenBalance: payload.newBalance,
-          monthlySparksEarned: payload.newSparks ?? prev.monthlySparksEarned,
-        };
-      });
+      console.log('[AuthContext] 🎁 gift:received - amount:', payload.amount);
+      applyBalance({ 
+        tokenBalance: payload.newBalance,
+        monthlySparksEarned: payload.newSparks,
+      }, 'gift:received');
     };
 
     const handleGiftSent = (payload: { toUserId: string; amount: number; newBalance: number }) => {
-      console.log('[AuthContext] Gift sent:', payload);
-      setUser((prev) => prev ? { ...prev, tokenBalance: payload.newBalance } : prev);
+      console.log('[AuthContext] 🎁 gift:sent - amount:', payload.amount);
+      applyBalance({ tokenBalance: payload.newBalance }, 'gift:sent');
     };
 
     const handleTokenBalanceUpdated = (payload: { userId: string; newBalance: number }) => {
       if (payload.userId === user.id) {
-        console.log('[AuthContext] Token balance updated:', payload.newBalance);
-        setUser((prev) => prev ? { ...prev, tokenBalance: payload.newBalance } : prev);
+        console.log('[AuthContext] ⚠️ token:balance_updated received - USING applyBalance');
+        applyBalance({ tokenBalance: payload.newBalance }, 'token:balance_updated');
       }
     };
 
     const handleTokenSpent = (payload: { amount: number; newBalance: number }) => {
-      console.log('[AuthContext] Token spent:', payload);
-      setUser((prev) => prev ? { ...prev, tokenBalance: payload.newBalance } : prev);
+      console.log('[AuthContext] 💰 token:spent received - amount:', payload.amount, 'newBalance:', payload.newBalance);
+      applyBalance({ tokenBalance: payload.newBalance }, 'token:spent');
     };
 
     const handleSparkEarned = (payload: { amount: number; monthlySparksEarned?: number; totalSparksEarned?: number }) => {
-      console.log('[AuthContext] Spark earned:', payload);
-      setUser((prev) => {
-        if (!prev) return null;
-        return { 
-          ...prev, 
-          monthlySparksEarned: payload.monthlySparksEarned ?? prev.monthlySparksEarned,
-          totalSparksEarned: payload.totalSparksEarned ?? prev.totalSparksEarned,
-        };
-      });
+      console.log('[AuthContext] ✨ spark:earned received - amount:', payload.amount);
+      applyBalance({ 
+        monthlySparksEarned: payload.monthlySparksEarned,
+        totalSparksEarned: payload.totalSparksEarned,
+      }, 'spark:earned');
     };
 
     const handlePrimeUpdated = (payload: { isPrime: boolean; primeExpiry: string }) => {
       console.log('[AuthContext] Prime updated:', payload);
-      setUser((prev) => prev ? { ...prev, isPrime: payload.isPrime, primeExpiry: payload.primeExpiry } : prev);
+      setUserSafe(
+        (prev) => prev ? { ...prev, isPrime: payload.isPrime, primeExpiry: payload.primeExpiry } : prev,
+        'prime:updated',
+        true // Balance koru
+      );
     };
 
     // Listeners ekle
@@ -281,7 +377,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.log('[AuthContext] Error clearing tokens:', e);
     }
     setToken(null);
-    setUser(null);
+    setUserSafe(null, 'clearAllTokens', false);
     setOnboardingCompleted(false);
   };
 
@@ -301,6 +397,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setToken(newAccessToken);
         
         console.log('[AuthContext] Token refreshed successfully');
+        resetAuthMeThrottle(); // Throttle'ı resetle ki retry yapılabilsin
         return true;
       }
     } catch (err) {
@@ -320,7 +417,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await SecureStore.setItemAsync(STORAGE_KEYS.REFRESH_TOKEN, refreshToken);
     
     setToken(accessToken);
-    setUser(userData);
+    // Login - balance dahil tüm veriyi al (preserveBalance: false)
+    setUserSafe(userData, 'loginWithToken', false);
     
     // Socket room'a katıl
     joinUserRoom(userData.id);
@@ -333,33 +431,82 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = async () => {
-    try {
-      // API ile logout (refresh token iptal)
-      await api.post('/api/auth/logout').catch(() => {});
-    } catch (e) {
-      // API hatası olsa bile çıkış yap
-    }
+    console.log('[AuthContext] Logout started...');
     
-    // Socket room'dan ayrıl
+    // Logout işlemi başladı - diğer state güncellemelerini engelle
+    isLoggingOut.current = true;
+    
+    // Socket room'dan ayrıl (state update'lerden önce)
     leaveUserRoom();
     
-    // Tüm tokenları temizle
-    await clearAllTokens();
+    // Storage temizle (sync olmadan)
+    SecureStore.deleteItemAsync(STORAGE_KEYS.ACCESS_TOKEN).catch(() => {});
+    SecureStore.deleteItemAsync(STORAGE_KEYS.REFRESH_TOKEN).catch(() => {});
+    AsyncStorage.removeItem('token').catch(() => {});
+    
+    // ÖNCELİKLE state'leri temizle (navigation hemen güncellensin)
+    setToken(null);
+    setUserSafe(null, 'logout', false);
+    setOnboardingCompleted(false);
+    
+    // API ile logout (refresh token iptal) - en son yap, başarısız olsa bile sorun değil
+    api.post('/api/auth/logout').catch(() => {});
     
     console.log('[AuthContext] User logged out');
+    
+    // Biraz bekle sonra isLoggingOut'u sıfırla
+    setTimeout(() => {
+      isLoggingOut.current = false;
+    }, 1000);
   };
 
-  const refreshProfile = async () => {
-    if (!token) return;
+  // ÖNEMLİ: useCallback ile sarıldı - referans değişmemesi için
+  // Bu olmadan ProfileScreen'deki useFocusEffect sonsuz döngüye giriyor
+  // THROTTLE: En fazla 10 saniyede bir çağrılabilir
+  const refreshProfile = useCallback(async () => {
+    refreshCallCount.current++;
+    const callNum = refreshCallCount.current;
+    
+    // 🔴🔴🔴 HER ÇAĞRI LOGLA - SPAM TESPİT İÇİN 🔴🔴🔴
+    console.log(`🔴🔴🔴 refreshProfile CALL #${callNum} - V6 🔴🔴🔴`);
+    
+    const now = Date.now();
+    const timeSinceLastRefresh = now - lastRefreshTime.current;
+    
+    // 10 SANİYE içinde tekrar çağrılmışsa ATLA
+    if (timeSinceLastRefresh < 10000) {
+      return; // Sessizce atla
+    }
+    
+    // Zaten çalışıyorsa ATLA
+    if (isRefreshingProfile.current) {
+      return;
+    }
+    
+    console.log(`[AuthContext] ✅ refreshProfile #${callNum} EXECUTING after ${timeSinceLastRefresh}ms`);
+    
+    if (!token || isLoggingOut.current) return;
+    
+    isRefreshingProfile.current = true;
+    lastRefreshTime.current = now;
+    
     try {
+      console.log('[AuthContext] 🔄 refreshProfile called, current balance:', user?.tokenBalance);
       const res = await api.get<{ success: boolean; data: { user: User } }>('/api/auth/me');
-      if (res.data.success && res.data.data.user) {
-        setUser(res.data.data.user);
+      if (res.data.success && res.data.data.user && !isLoggingOut.current) {
+        const incomingUser = res.data.data.user;
+        console.log('[AuthContext] 🔄 refreshProfile got user, incoming balance:', incomingUser.tokenBalance);
+        
+        // ÖNEMLİ: Balance'ı KORUYARAK user'ı güncelle
+        // Socket eventleri daha güncel balance sağlıyor, DB'den gelen stale olabilir
+        setUserSafe(incomingUser, 'refreshProfile', true); // Balance korunacak
       }
     } catch (err) {
       console.log('[AuthContext] Failed to refresh profile:', err);
+    } finally {
+      isRefreshingProfile.current = false;
     }
-  };
+  }, [token, setUserSafe]); // user'ı dependency olarak EKLEME - balance log için gerek yok
 
   const refreshAccessToken = async (): Promise<boolean> => {
     const storedRefreshToken = await SecureStore.getItemAsync(STORAGE_KEYS.REFRESH_TOKEN);
@@ -380,16 +527,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Token balance functions
   const updateTokenBalance = useCallback((newBalance: number) => {
-    setUser((prev) => prev ? { ...prev, tokenBalance: newBalance } : null);
-  }, []);
+    console.log('[AuthContext] updateTokenBalance called:', newBalance);
+    applyBalance({ tokenBalance: newBalance }, 'updateTokenBalance');
+  }, [applyBalance]);
 
   const addTokens = useCallback((amount: number) => {
-    setUser((prev) => prev ? { ...prev, tokenBalance: prev.tokenBalance + amount } : null);
+    console.log('[AuthContext] addTokens called:', amount);
+    setUser((prev) => {
+      if (!prev) return null;
+      const newBalance = prev.tokenBalance + amount;
+      balanceRevRef.current = Date.now();
+      console.log(`[AuthContext] 💰 addTokens: ${prev.tokenBalance} + ${amount} = ${newBalance}`);
+      return { ...prev, tokenBalance: newBalance };
+    });
   }, []);
 
   const deductTokens = useCallback((amount: number) => {
-    setUser((prev) => prev ? { ...prev, tokenBalance: Math.max(0, prev.tokenBalance - amount) } : null);
+    console.log('[AuthContext] deductTokens called:', amount);
+    setUser((prev) => {
+      if (!prev) return null;
+      const newBalance = Math.max(0, prev.tokenBalance - amount);
+      balanceRevRef.current = Date.now();
+      console.log(`[AuthContext] 💰 deductTokens: ${prev.tokenBalance} - ${amount} = ${newBalance}`);
+      return { ...prev, tokenBalance: newBalance };
+    });
   }, []);
+  
+  // DEBUG: Kalan setUser çağrılarını yakala (olmamalı)
+  // Not: addTokens ve deductTokens direkt setUser kullanıyor çünkü balance hesaplama yapıyorlar
 
   return (
     <AuthContext.Provider

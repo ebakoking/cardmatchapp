@@ -231,7 +231,135 @@ router.patch('/users/:id', adminAuthMiddleware, async (req, res) => {
   return res.json({ success: true, data: user });
 });
 
-// Verifications
+// ============ SELFİE DOĞRULAMA (YENİ SİSTEM) ============
+
+// Poz açıklamaları
+const POSE_DESCRIPTIONS: Record<string, string> = {
+  THUMBS_UP: 'Başparmak yukarı 👍',
+  PEACE_SIGN: 'V işareti ✌️',
+  WAVE_HAND: 'El sallama 👋',
+  POINT_UP: 'Yukarı işaret ☝️',
+  OK_SIGN: 'OK işareti 👌',
+};
+
+// Bekleyen selfie doğrulama istekleri
+router.get('/verifications/selfie/pending', adminAuthMiddleware, async (req, res) => {
+  const requests = await prisma.verificationRequest.findMany({
+    where: { status: 'PENDING' },
+    orderBy: { createdAt: 'asc' }, // En eski önce
+  });
+
+  // Kullanıcı bilgilerini çek
+  const userIds = requests.map((r) => r.userId);
+  const users = await prisma.user.findMany({
+    where: { id: { in: userIds } },
+    select: {
+      id: true,
+      nickname: true,
+      age: true,
+      gender: true,
+      createdAt: true,
+    },
+  });
+
+  const userMap = new Map(users.map((u) => [u.id, u]));
+
+  const data = requests.map((r) => ({
+    id: r.id,
+    userId: r.userId,
+    user: userMap.get(r.userId),
+    pose: r.pose,
+    poseDescription: POSE_DESCRIPTIONS[r.pose] || r.pose,
+    selfieUrl: r.selfieUrl,
+    createdAt: r.createdAt,
+  }));
+
+  return res.json({ success: true, data });
+});
+
+// Selfie doğrulama onayla
+router.post('/verifications/selfie/:id/approve', adminAuthMiddleware, async (req: any, res) => {
+  const { id } = req.params;
+  const adminId = req.admin.userId;
+
+  const request = await prisma.verificationRequest.findUnique({ where: { id } });
+  if (!request) {
+    return res.status(404).json({
+      success: false,
+      error: { code: 'NOT_FOUND', message: 'Doğrulama isteği bulunamadı' },
+    });
+  }
+
+  // Transaction ile güncelle
+  await prisma.$transaction([
+    prisma.verificationRequest.update({
+      where: { id },
+      data: {
+        status: 'APPROVED',
+        reviewedBy: adminId,
+        reviewedAt: new Date(),
+      },
+    }),
+    prisma.user.update({
+      where: { id: request.userId },
+      data: {
+        verified: true,
+        verificationStatus: 'APPROVED',
+      },
+    }),
+  ]);
+
+  // TODO: Push notification gönder - "Profiliniz doğrulandı! ✅"
+
+  return res.json({ success: true, message: 'Doğrulama onaylandı' });
+});
+
+// Selfie doğrulama reddet
+router.post(
+  '/verifications/selfie/:id/reject',
+  adminAuthMiddleware,
+  validateBody(z.object({ reason: z.string().min(1) })),
+  async (req: any, res) => {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const adminId = req.admin.userId;
+
+    const request = await prisma.verificationRequest.findUnique({ where: { id } });
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Doğrulama isteği bulunamadı' },
+      });
+    }
+
+    // Transaction ile güncelle
+    await prisma.$transaction([
+      prisma.verificationRequest.update({
+        where: { id },
+        data: {
+          status: 'REJECTED',
+          reviewedBy: adminId,
+          reviewNote: reason,
+          reviewedAt: new Date(),
+        },
+      }),
+      prisma.user.update({
+        where: { id: request.userId },
+        data: {
+          verificationStatus: 'REJECTED',
+        },
+      }),
+    ]);
+
+    // TODO: Push notification gönder - "Doğrulama reddedildi: {reason}"
+
+    return res.json({ success: true, message: 'Doğrulama reddedildi' });
+  },
+);
+
+// ============ ESKİ VİDEO DOĞRULAMA SİSTEMİ ============
+
+// Verifications (eski video sistemi - legacy)
 router.get('/verifications/pending', adminAuthMiddleware, async (req, res) => {
   const users = await prisma.user.findMany({
     where: { verificationStatus: 'PENDING' },
@@ -242,7 +370,7 @@ router.get('/verifications/pending', adminAuthMiddleware, async (req, res) => {
   });
 
   const verifications = users
-    .filter((u) => u.VerificationVideo)
+    .filter((u) => u.verificationVideo)
     .map((u) => ({
       id: u.id,
       userId: u.id,
@@ -251,7 +379,7 @@ router.get('/verifications/pending', adminAuthMiddleware, async (req, res) => {
         age: u.age,
         profilePhotos: u.profilePhotos,
       },
-      verificationVideoUrl: u.VerificationVideo!.url,
+      verificationVideoUrl: u.verificationVideo!.url,
     }));
 
   return res.json({ success: true, data: verifications });

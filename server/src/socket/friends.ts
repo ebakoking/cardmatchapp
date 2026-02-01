@@ -2,12 +2,15 @@ import { Server, Socket } from 'socket.io';
 import { prisma } from '../prisma';
 import { FEATURES, logTokenGiftAttempt } from '../config/features';
 
+// Sohbet ekranında olan kullanıcıları takip et
+const chatPresence: Map<string, Set<string>> = new Map(); // friendshipId -> Set<userId>
+
 export function registerFriendsHandlers(io: Server, socket: Socket) {
   // Arkadaş chat odasına katıl
   socket.on(
     'friend:join',
-    async (payload: { friendshipId: string }) => {
-      const { friendshipId } = payload;
+    async (payload: { friendshipId: string; userId?: string }) => {
+      const { friendshipId, userId } = payload;
 
       const friendship = await prisma.friendship.findUnique({
         where: { id: friendshipId },
@@ -17,6 +20,42 @@ export function registerFriendsHandlers(io: Server, socket: Socket) {
       const room = `friendchat:${friendshipId}`;
       socket.join(room);
       console.log(`[Friends] Socket joined room: ${room}`);
+
+      // Presence tracking
+      if (userId) {
+        if (!chatPresence.has(friendshipId)) {
+          chatPresence.set(friendshipId, new Set());
+        }
+        chatPresence.get(friendshipId)?.add(userId);
+        
+        // Diğer kullanıcıya bildir
+        io.to(room).emit('friend:presence', {
+          odaId: friendshipId,
+          userId,
+          isOnline: true,
+        });
+        console.log(`[Friends] User ${userId} joined chat ${friendshipId}, online users:`, chatPresence.get(friendshipId));
+      }
+    },
+  );
+
+  // Arkadaş chat odasından ayrıl
+  socket.on(
+    'friend:leave',
+    async (payload: { friendshipId: string; userId?: string }) => {
+      const { friendshipId, userId } = payload;
+      
+      if (userId && chatPresence.has(friendshipId)) {
+        chatPresence.get(friendshipId)?.delete(userId);
+        
+        const room = `friendchat:${friendshipId}`;
+        io.to(room).emit('friend:presence', {
+          odaId: friendshipId,
+          userId,
+          isOnline: false,
+        });
+        console.log(`[Friends] User ${userId} left chat ${friendshipId}`);
+      }
     },
   );
 
@@ -72,7 +111,7 @@ export function registerFriendsHandlers(io: Server, socket: Socket) {
     },
   );
 
-  // Arkadaş medya gönder (ses/fotoğraf/video)
+  // Arkadaş medya gönder (ses/fotoğraf/video) - İLK ÜCRETSİZ mantığı
   socket.on(
     'friend:media',
     async (payload: {
@@ -102,12 +141,33 @@ export function registerFriendsHandlers(io: Server, socket: Socket) {
           });
         }
 
+        // İLK MEDYA KONTROLÜ: Bu gönderenin bu chat'e daha önce gönderdiği aynı türdeki medya sayısı
+        const previousMediaCount = await prisma.friendChatMessage.count({
+          where: {
+            friendChatId: chat.id,
+            senderId,
+            mediaType,
+          },
+        });
+
+        const isFirstFree = previousMediaCount === 0;
+        const locked = !isFirstFree;
+        
+        // Medya fiyatları
+        const MEDIA_COSTS = { audio: 5, photo: 20, video: 50 };
+        const mediaPrice = MEDIA_COSTS[mediaType] || 20;
+
+        console.log(`[Friends] Media - previousCount: ${previousMediaCount}, isFirstFree: ${isFirstFree}, locked: ${locked}, price: ${mediaPrice}`);
+
         const message = await prisma.friendChatMessage.create({
           data: {
             friendChatId: chat.id,
             senderId,
             mediaUrl,
             mediaType,
+            locked,
+            isFirstFree,
+            mediaPrice,
           },
         });
 
@@ -119,6 +179,9 @@ export function registerFriendsHandlers(io: Server, socket: Socket) {
           content: null,
           mediaUrl: message.mediaUrl,
           mediaType: message.mediaType,
+          locked: message.locked,
+          isFirstFree: message.isFirstFree,
+          mediaPrice: message.mediaPrice,
           isInstant,
           duration,
           createdAt: message.createdAt,
@@ -139,7 +202,7 @@ export function registerFriendsHandlers(io: Server, socket: Socket) {
       amount: number;
     }) => {
       try {
-        // 🔴 KILL SWITCH: Jeton sistemi kapalıysa işlemi reddet
+        // 🔴 KILL SWITCH: Elmas sistemi kapalıysa işlemi reddet
         logTokenGiftAttempt(!FEATURES.TOKEN_GIFT_ENABLED);
         if (!FEATURES.TOKEN_GIFT_ENABLED) {
           console.log('[Friends] ⛔ TOKEN GIFT DISABLED - Request blocked');
@@ -193,23 +256,24 @@ export function registerFriendsHandlers(io: Server, socket: Socket) {
           return;
         }
 
-        console.log(`[Friends] BEFORE - Sender: ${sender.nickname} balance: ${sender.tokenBalance}`);
-        console.log(`[Friends] BEFORE - Receiver: ${receiver.nickname} balance: ${receiver.tokenBalance}, sparks: ${receiver.monthlySparksEarned}`);
+        console.log(`[Friends] BEFORE - Sender: ${sender.nickname} balance: ${sender.tokenBalance}, sparks: ${sender.monthlySparksEarned}`);
+        console.log(`[Friends] BEFORE - Receiver: ${receiver.nickname} balance: ${receiver.tokenBalance}`);
 
-        // Transaction: Gönderenden düş, alana ekle + SPARK GÜNCELLE!
+        // Transaction: Gönderenden düş, alana token ekle
+        // NOT: Gift gönderene SPARK YAZILMAZ (kötü niyetli kullanım riski)
         await prisma.$transaction([
           prisma.user.update({
             where: { id: fromUserId },
-            data: { tokenBalance: { decrement: amount } },
+            data: { 
+              tokenBalance: { decrement: amount },
+              // Spark KALDIRILDI - kötü niyetli kullanım riski
+            },
           }),
           prisma.user.update({
             where: { id: toUserId },
             data: { 
               tokenBalance: { increment: amount },
               monthlyTokensReceived: { increment: amount },
-              // ARKADAŞ HEDİYELERİ SPARK'A YANSIR!
-              monthlySparksEarned: { increment: amount },
-              totalSparksEarned: { increment: amount },
             },
           }),
           prisma.gift.create({
@@ -226,8 +290,8 @@ export function registerFriendsHandlers(io: Server, socket: Socket) {
         const updatedSender = await prisma.user.findUnique({ where: { id: fromUserId } });
         const updatedReceiver = await prisma.user.findUnique({ where: { id: toUserId } });
 
-        console.log(`[Friends] AFTER - Sender: ${updatedSender?.nickname} balance: ${updatedSender?.tokenBalance}`);
-        console.log(`[Friends] AFTER - Receiver: ${updatedReceiver?.nickname} balance: ${updatedReceiver?.tokenBalance}, sparks: ${updatedReceiver?.monthlySparksEarned}`);
+        console.log(`[Friends] AFTER - Sender: ${updatedSender?.nickname} balance: ${updatedSender?.tokenBalance}, sparks: ${updatedSender?.monthlySparksEarned}`);
+        console.log(`[Friends] AFTER - Receiver: ${updatedReceiver?.nickname} balance: ${updatedReceiver?.tokenBalance}`);
 
         // Hediye mesajını veritabanına kaydet (kalıcı olsun)
         const friendChat = await prisma.friendChat.findFirst({
@@ -257,22 +321,22 @@ export function registerFriendsHandlers(io: Server, socket: Socket) {
           console.log('[Friends] Gift messages saved to database');
         }
 
-        // Gönderene bildir
+        // Gönderene bildir (SPARK YOK - kaldırıldı)
         console.log(`[Friends] Emitting friend:gift:sent to ${fromUserId}`);
         io.to(fromUserId).emit('friend:gift:sent', {
           toUserId,
           amount,
           newBalance: updatedSender?.tokenBalance || 0,
         });
+        // NOT: Spark emission kaldırıldı (kötü niyetli kullanım riski)
 
-        // Alana bildir
+        // Alana bildir (spark bilgisi YOK - sadece token aldı)
         console.log(`[Friends] Emitting friend:gift:received to ${toUserId}`);
         io.to(toUserId).emit('friend:gift:received', {
           fromUserId,
           amount,
           fromNickname: sender.nickname,
           newBalance: updatedReceiver?.tokenBalance || 0,
-          newSparks: updatedReceiver?.monthlySparksEarned || 0,
         });
 
         // Chat odasına da bildir (FriendChatScreen için)
@@ -361,6 +425,176 @@ export function registerFriendsHandlers(io: Server, socket: Socket) {
       io.to(`friendchat:${friendshipId}`).emit('friend:call:ended', { 
         endedBy: userId 
       });
+    },
+  );
+
+  // ============ MEDYA KİLİT AÇMA - BASİT SİSTEM: locked field'ına bak ============
+  socket.on(
+    'friend:media:unlock',
+    async (payload: {
+      friendshipId: string;
+      messageId: string;
+      userId: string;
+    }) => {
+      try {
+        const { friendshipId, messageId, userId } = payload;
+        console.log(`[Friends] Media unlock request: messageId=${messageId}, userId=${userId}`);
+
+        // 1. Mesajı bul
+        const message = await prisma.friendChatMessage.findUnique({
+          where: { id: messageId },
+        });
+
+        if (!message) {
+          socket.emit('error', { message: 'Mesaj bulunamadı.', code: 'MESSAGE_NOT_FOUND' });
+          return;
+        }
+
+        // 2. Kendi mesajını görüntülüyorsa her zaman ücretsiz
+        if (message.senderId === userId) {
+          socket.emit('friend:media:unlocked', {
+            messageId,
+            success: true,
+            cost: 0,
+            free: true,
+            mediaUrl: message.mediaUrl,
+          });
+          return;
+        }
+
+        // 3. Zaten okunmuşsa tekrar açılmasın
+        if (message.readAt) {
+          socket.emit('friend:media:unlocked', {
+            messageId,
+            success: true,
+            cost: 0,
+            alreadyViewed: true,
+            mediaUrl: message.mediaUrl,
+          });
+          return;
+        }
+
+        // 4. LOCKED DEĞİLSE (ilk medya = ücretsiz)
+        if (!message.locked) {
+          console.log(`[Friends] FREE media unlock - isFirstFree: ${message.isFirstFree}`);
+          
+          await prisma.friendChatMessage.update({
+            where: { id: messageId },
+            data: { readAt: new Date() },
+          });
+
+          const viewer = await prisma.user.findUnique({ where: { id: userId } });
+
+          socket.emit('friend:media:unlocked', {
+            messageId,
+            success: true,
+            cost: 0,
+            free: true,
+            isFirstFree: message.isFirstFree,
+            mediaUrl: message.mediaUrl,
+            newBalance: viewer?.tokenBalance || 0,
+          });
+
+          console.log(`[Friends] FREE media unlocked: ${messageId} by ${userId}`);
+          return;
+        }
+
+        // 5. LOCKED İSE - ücretli açma
+        const cost = message.mediaPrice || 20;
+        
+        console.log(`[Friends] PAID media unlock - cost: ${cost}`);
+
+        // 6. Bakiye kontrolü
+        const viewer = await prisma.user.findUnique({ where: { id: userId } });
+        if (!viewer) {
+          socket.emit('error', { message: 'Kullanıcı bulunamadı.', code: 'USER_NOT_FOUND' });
+          return;
+        }
+
+        if (viewer.tokenBalance < cost) {
+          socket.emit('error', { 
+            message: `Yetersiz elmas bakiyesi. ${cost} elmas gerekiyor.`, 
+            code: 'INSUFFICIENT_BALANCE',
+            required: cost,
+            balance: viewer.tokenBalance,
+          });
+          return;
+        }
+
+        // 7. Spark = maliyet (1:1 oran)
+        const sparkAmount = cost;
+
+        console.log(`[Friends] 📸 MEDYA AÇ BAŞLADI - viewer: ${userId}, balance: ${viewer.tokenBalance}, cost: ${cost}`);
+
+        // 8. Transaction: Token düş, Spark ekle, Mesaj aç - GÜNCEL BAKİYELERİ DÖN
+        const result = await prisma.$transaction(async (tx) => {
+          const updatedViewer = await tx.user.update({
+            where: { id: userId },
+            data: { tokenBalance: { decrement: cost } },
+            select: { tokenBalance: true },
+          });
+          
+          const updatedSender = await tx.user.update({
+            where: { id: message.senderId },
+            data: {
+              monthlySparksEarned: { increment: sparkAmount },
+              totalSparksEarned: { increment: sparkAmount },
+            },
+            select: { monthlySparksEarned: true, totalSparksEarned: true },
+          });
+          
+          await tx.friendChatMessage.update({
+            where: { id: messageId },
+            data: { 
+              locked: false,
+              readAt: new Date(),
+            },
+          });
+          
+          await tx.sparkTransaction.create({
+            data: {
+              fromUserId: userId,
+              toUserId: message.senderId,
+              amount: sparkAmount,
+              reason: 'friend_media_unlock',
+            },
+          });
+          
+          return { updatedViewer, updatedSender };
+        });
+
+        console.log(`[Friends] ✅ MEDYA AÇ TAMAMLANDI - viewerNewBalance: ${result.updatedViewer.tokenBalance}`);
+
+        // 9. Socket bildirimleri - TEK KAYNAK
+        socket.emit('friend:media:unlocked', {
+          messageId,
+          success: true,
+          cost,
+          free: false,
+          mediaUrl: message.mediaUrl,
+          newBalance: result.updatedViewer.tokenBalance,
+        });
+
+        io.to(userId).emit('token:spent', {
+          amount: cost,
+          newBalance: result.updatedViewer.tokenBalance,
+          reason: 'friend_media_unlock',
+        });
+
+        io.to(message.senderId).emit('spark:earned', {
+          amount: sparkAmount,
+          monthlySparksEarned: result.updatedSender.monthlySparksEarned,
+          totalSparksEarned: result.updatedSender.totalSparksEarned,
+          reason: 'friend_media_viewed',
+          fromUserId: userId,
+        });
+        
+        console.log(`[Friends] 📤 Events emitted - newBalance: ${result.updatedViewer.tokenBalance}`);
+
+      } catch (error) {
+        console.error('[Friends] Media unlock error:', error);
+        socket.emit('error', { message: 'Medya açılamadı.', code: 'MEDIA_UNLOCK_ERROR' });
+      }
     },
   );
 
