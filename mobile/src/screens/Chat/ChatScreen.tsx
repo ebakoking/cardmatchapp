@@ -15,6 +15,8 @@ import {
   Vibration,
   ActivityIndicator,
   Image,
+  ActionSheetIOS,
+  ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -71,11 +73,11 @@ const GIFT_OPTIONS = [
   { amount: 100, emoji: '💎💎💎', label: '100' },
 ];
 
-// Hızlı satın alma seçenekleri
+// Hızlı satın alma seçenekleri (HomeScreen ile aynı)
 const PURCHASE_OPTIONS = [
-  { tokens: 50, price: '₺29.90', popular: false },
-  { tokens: 100, price: '₺49.90', popular: true },
-  { tokens: 500, price: '₺199.90', popular: false },
+  { tokens: 50, price: '49,90 TL', popular: false },
+  { tokens: 100, price: '89,90 TL', popular: true },
+  { tokens: 250, price: '199,90 TL', popular: false },
 ];
 
 interface ChatMessage {
@@ -111,7 +113,7 @@ const STAGE_THRESHOLDS = [0, 10, 20, 30, 40];
 
 const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const { sessionId, partnerNickname, partnerId } = route.params;
-  const { user } = useAuth();
+  const { user, updateTokenBalance, instantBalance } = useAuth();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [stage, setStage] = useState(1);
@@ -120,8 +122,18 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const [isEnded, setIsEnded] = useState(false);
   const [giftModalVisible, setGiftModalVisible] = useState(false);
   const [friendRequestSent, setFriendRequestSent] = useState(false);
+  const [friendAlertVisible, setFriendAlertVisible] = useState(false);
+  const [friendAlertType, setFriendAlertType] = useState<'success' | 'info' | 'locked'>('success');
+  const [friendAlertMessage, setFriendAlertMessage] = useState('');
   const [tokenGiftEnabled, setTokenGiftEnabled] = useState(true);
   const [tokenGiftDisabledMessage, setTokenGiftDisabledMessage] = useState('');
+  
+  // Gift animation states
+  const [showGiftAnimation, setShowGiftAnimation] = useState(false);
+  const [giftAnimationType, setGiftAnimationType] = useState<'sent' | 'received'>('received');
+  const [giftAnimationAmount, setGiftAnimationAmount] = useState(0);
+  const giftAnimationScale = useRef(new Animated.Value(0)).current;
+  const giftAnimationOpacity = useRef(new Animated.Value(0)).current;
   const [isPartnerTyping, setIsPartnerTyping] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   
@@ -144,6 +156,10 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   // Görüntülenen medyalar (ephemeral tracking)
   const [viewedMediaIds, setViewedMediaIds] = useState<Set<string>>(new Set());
   const [listenedAudioIds, setListenedAudioIds] = useState<Set<string>>(new Set());
+  
+  // Medya seçici (iOS: ActionSheet, Android: Modal)
+  const [mediaPickerVisible, setMediaPickerVisible] = useState(false);
+  const [mediaPickerType, setMediaPickerType] = useState<'photo' | 'video'>('photo');
 
   // Animasyonlar
   const typingAnimation = useRef(new Animated.Value(0)).current;
@@ -246,7 +262,7 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const handleBlockUser = async () => {
     Alert.alert(
       'Kullanıcıyı Engelle',
-      `${partnerNickname} kullanıcısını engellemek istediğinize emin misiniz?`,
+      'Bu kullanıcıyı engellemek istediğinize emin misiniz?',
       [
         { text: 'İptal', style: 'cancel' },
         {
@@ -256,7 +272,7 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             try {
               await api.post('/api/user/block', { blockedUserId: partnerId });
               Vibration.vibrate(100);
-              Alert.alert('Engellendi', `${partnerNickname} engellendi.`);
+              Alert.alert('Engellendi', 'Kullanıcı engellendi.');
               setMenuModalVisible(false);
               goToHome();
             } catch (error) {
@@ -302,7 +318,7 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         sessionId,
       });
       Vibration.vibrate([0, 50, 100, 50]);
-      Alert.alert('Beğenildi', `${partnerNickname} için olumlu geri bildirim gönderildi.`);
+      Alert.alert('Beğenildi', 'Olumlu geri bildirim gönderildi.');
       setMenuModalVisible(false);
     } catch (error) {
       Alert.alert('Hata', 'İşlem başarısız oldu.');
@@ -310,15 +326,33 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   };
 
   // Değerlendirme gönder
-  const handleRating = async (rating: 'like' | 'skip') => {
+  const handleRating = async (rating: 'like' | 'dislike' | 'report' | 'skip') => {
+    const socket = getSocket();
+    
     if (rating === 'like') {
-      const socket = getSocket();
-      socket.emit('user:like', {
+      // Beğenme - Match sisteminde kullanılacak pozitif veri
+      socket.emit('user:feedback', {
         fromUserId: user?.id,
         toUserId: partnerId,
         sessionId,
+        feedbackType: 'like',
       });
+    } else if (rating === 'dislike') {
+      // Beğenmeme - Match sisteminde kullanılacak negatif veri
+      socket.emit('user:feedback', {
+        fromUserId: user?.id,
+        toUserId: partnerId,
+        sessionId,
+        feedbackType: 'dislike',
+      });
+    } else if (rating === 'report') {
+      // Bildir - Önce modal'ı kapat, sonra report modal'ı aç
+      setRatingModalVisible(false);
+      setReportModalVisible(true);
+      return; // goToHome'u çağırma
     }
+    // 'skip' için hiçbir şey gönderme
+    
     setRatingModalVisible(false);
     goToHome();
   };
@@ -376,15 +410,89 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       }
     });
 
-    // NOT: Balance güncellemesi AuthContext'te yapılıyor - burada duplicate yapmıyoruz
+    // Hediye alındığında - bakiye ve animasyon güncelle
     socket.on('gift:received', (payload: { fromUserId: string; amount: number; fromNickname: string; newBalance: number; messageId: string }) => {
-      console.log('[ChatScreen] gift:received - vibration only (balance via AuthContext)');
+      console.log('[ChatScreen] 🎁 gift:received - newBalance:', payload.newBalance);
       Vibration.vibrate([0, 100, 50, 100]);
+      
+      // 🚀 ANLIK: Bakiyeyi hemen güncelle
+      if (payload.newBalance !== undefined) {
+        console.log('[ChatScreen] 💰 Updating balance to:', payload.newBalance);
+        updateTokenBalance(payload.newBalance);
+      }
+      
+      // Animasyonu göster
+      setGiftAnimationType('received');
+      setGiftAnimationAmount(payload.amount);
+      setShowGiftAnimation(true);
+      
+      // Animasyon
+      giftAnimationScale.setValue(0);
+      giftAnimationOpacity.setValue(0);
+      Animated.parallel([
+        Animated.spring(giftAnimationScale, {
+          toValue: 1,
+          friction: 4,
+          tension: 100,
+          useNativeDriver: true,
+        }),
+        Animated.timing(giftAnimationOpacity, {
+          toValue: 1,
+          duration: 200,
+          useNativeDriver: true,
+        }),
+      ]).start();
+      
+      // 3 saniye sonra kapat
+      setTimeout(() => {
+        Animated.timing(giftAnimationOpacity, {
+          toValue: 0,
+          duration: 300,
+          useNativeDriver: true,
+        }).start(() => setShowGiftAnimation(false));
+      }, 3000);
     });
 
+    // Hediye gönderildiğinde - Server onayı (bakiye zaten optimistic olarak düşürüldü)
     socket.on('gift:sent', (payload: { toUserId: string; amount: number; newBalance: number; messageId: string }) => {
-      console.log('[ChatScreen] gift:sent - no action needed (balance via AuthContext)');
-      // AuthContext handles balance update
+      console.log('[ChatScreen] 💸 gift:sent confirmed - newBalance:', payload.newBalance);
+      
+      // Server'dan gelen gerçek bakiye ile senkronize et
+      if (payload.newBalance !== undefined) {
+        console.log('[ChatScreen] 💰 Syncing balance to:', payload.newBalance);
+        updateTokenBalance(payload.newBalance);
+      }
+      
+      // Animasyonu göster
+      setGiftAnimationType('sent');
+      setGiftAnimationAmount(payload.amount);
+      setShowGiftAnimation(true);
+      
+      // Animasyon
+      giftAnimationScale.setValue(0);
+      giftAnimationOpacity.setValue(0);
+      Animated.parallel([
+        Animated.spring(giftAnimationScale, {
+          toValue: 1,
+          friction: 4,
+          tension: 100,
+          useNativeDriver: true,
+        }),
+        Animated.timing(giftAnimationOpacity, {
+          toValue: 1,
+          duration: 200,
+          useNativeDriver: true,
+        }),
+      ]).start();
+      
+      // 2 saniye sonra kapat
+      setTimeout(() => {
+        Animated.timing(giftAnimationOpacity, {
+          toValue: 0,
+          duration: 300,
+          useNativeDriver: true,
+        }).start(() => setShowGiftAnimation(false));
+      }, 2000);
     });
 
     // DEBUG: Media view response listeners
@@ -451,6 +559,12 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       }
     });
 
+    // Medya silindi (Snapchat tarzı - diğer kullanıcı görüntüledi)
+    socket.on('media:deleted', (payload: { messageId: string; deletedBy: string }) => {
+      console.log('[ChatScreen] media:deleted:', payload);
+      setMessages(prev => prev.filter(m => m.id !== payload.messageId));
+    });
+
     return () => {
       console.log('[ChatScreen] Cleanup - emitting chat:leave');
       socket.emit('chat:leave', { sessionId, userId: user?.id });
@@ -463,6 +577,7 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       socket.off('gift:error');
       socket.off('friend:info');
       socket.off('friend:accepted');
+      socket.off('media:deleted');
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current);
       }
@@ -580,7 +695,7 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         name: `${type}_${Date.now()}${ext}`,
       } as any);
 
-      const apiBaseUrl = api.defaults.baseURL || 'http://localhost:3000';
+      const apiBaseUrl = api.defaults.baseURL || '';
       console.log(`[ChatScreen] Uploading ${type} to ${apiBaseUrl}/api/upload/${type}`);
       
       const response = await fetch(`${apiBaseUrl}/api/upload/${type}`, {
@@ -616,15 +731,25 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       return;
     }
 
-    Alert.alert(
-      'Fotoğraf Gönder',
-      'Nasıl göndermek istiyorsunuz?',
-      [
-        { text: 'İptal', style: 'cancel' },
-        { text: '📷 Anlık Çek', onPress: () => sendPhotoFromCamera(true) },
-        { text: '🖼️ Galeriden', onPress: () => sendPhotoFromGallery(false) },
-      ],
-    );
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ['İptal', '📷 Anlık Çek', '🖼️ Galeriden'],
+          cancelButtonIndex: 0,
+          title: 'Fotoğraf Gönder',
+        },
+        (buttonIndex) => {
+          if (buttonIndex === 1) {
+            sendPhotoFromCamera(true);
+          } else if (buttonIndex === 2) {
+            sendPhotoFromGallery(false);
+          }
+        }
+      );
+    } else {
+      setMediaPickerType('photo');
+      setMediaPickerVisible(true);
+    }
   };
 
   const sendPhotoFromCamera = async (isInstant: boolean) => {
@@ -648,6 +773,13 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   };
 
   const sendPhotoFromGallery = async (isInstant: boolean) => {
+    // Galeri izni iste
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('İzin Gerekli', 'Galeriye erişim izni vermeniz gerekiyor.');
+      return;
+    }
+
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: false,
@@ -702,15 +834,25 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       return;
     }
 
-    Alert.alert(
-      'Video Gönder',
-      'Nasıl göndermek istiyorsunuz?',
-      [
-        { text: 'İptal', style: 'cancel' },
-        { text: '🎥 Çek', onPress: () => pickVideoFromCamera() },
-        { text: '📁 Galeriden', onPress: () => pickVideoFromGallery() },
-      ],
-    );
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ['İptal', '🎥 Anlık Çek', '📁 Galeriden'],
+          cancelButtonIndex: 0,
+          title: 'Video Gönder',
+        },
+        (buttonIndex) => {
+          if (buttonIndex === 1) {
+            pickVideoFromCamera();
+          } else if (buttonIndex === 2) {
+            pickVideoFromGallery();
+          }
+        }
+      );
+    } else {
+      setMediaPickerType('video');
+      setMediaPickerVisible(true);
+    }
   };
 
   const pickVideoFromCamera = async () => {
@@ -722,8 +864,8 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
     const result = await ImagePicker.launchCameraAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Videos,
-      allowsEditing: true,
-      videoMaxDuration: 30,
+      allowsEditing: false,
+      videoMaxDuration: 60, // Kamera kaydı için 60 saniye limit
       quality: 0.8,
     });
 
@@ -734,28 +876,22 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   };
 
   const pickVideoFromGallery = async () => {
+    // Galeri izni iste
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('İzin Gerekli', 'Galeriye erişim izni vermeniz gerekiyor.');
+      return;
+    }
+
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Videos,
-      allowsEditing: true,
-      videoMaxDuration: 30,
+      allowsEditing: false, // iOS kırpma özelliği düzgün çalışmıyor
       quality: 0.8,
     });
 
     if (!result.canceled && result.assets[0]) {
-      // Video süresi kontrolü (30 saniye max)
-      const asset = result.assets[0];
-      const durationSeconds = asset.duration ? asset.duration / 1000 : 0;
-      
-      if (durationSeconds > 30) {
-        Alert.alert(
-          'Video Çok Uzun',
-          `Video süresi ${Math.floor(durationSeconds)} saniye. Maksimum 30 saniye olmalı.`,
-          [{ text: 'Tamam' }]
-        );
-        return;
-      }
-      
-      setPendingVideoUri(asset.uri);
+      // Video süresi VideoPreview'da kontrol edilecek
+      setPendingVideoUri(result.assets[0].uri);
       setVideoPreviewVisible(true);
     }
   };
@@ -794,12 +930,16 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const handleAddFriend = () => {
     if (isFeatureLocked('friend')) {
       Vibration.vibrate(100);
-      Alert.alert('Kilitli', `Arkadaş eklemek için Seviye ${FEATURE_UNLOCKS.friend}'e ulaşmalısınız.`);
+      setFriendAlertType('locked');
+      setFriendAlertMessage(`Arkadaş eklemek için Seviye ${FEATURE_UNLOCKS.friend}'e ulaşmalısınız.`);
+      setFriendAlertVisible(true);
       return;
     }
 
     if (friendRequestSent) {
-      Alert.alert('Bilgi', 'Arkadaşlık isteği zaten gönderildi.');
+      setFriendAlertType('info');
+      setFriendAlertMessage('Arkadaşlık isteği zaten gönderildi.');
+      setFriendAlertVisible(true);
       return;
     }
 
@@ -811,7 +951,9 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     });
     setFriendRequestSent(true);
     Vibration.vibrate(50);
-    Alert.alert('Başarılı', 'Arkadaşlık isteği gönderildi!');
+    setFriendAlertType('success');
+    setFriendAlertMessage('Arkadaşlık isteği gönderildi!');
+    setFriendAlertVisible(true);
   };
 
   // Ses kaydı
@@ -850,7 +992,7 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
         name: `audio_${Date.now()}.m4a`,
       } as any);
 
-      const apiBaseUrl = api.defaults.baseURL || 'http://localhost:3000';
+      const apiBaseUrl = api.defaults.baseURL || '';
       const response = await fetch(`${apiBaseUrl}/api/upload/audio`, {
         method: 'POST',
         body: formData,
@@ -901,10 +1043,10 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       return;
     }
 
-    if (!user || (user.tokenBalance || 0) < amount) {
+    if (!user || instantBalance < amount) {
       Alert.alert(
         'Yetersiz Bakiye', 
-        `${amount} elmas gerekiyor.\nBakiyeniz: ${user?.tokenBalance || 0}`,
+        `${amount} elmas gerekiyor.\nBakiyeniz: ${instantBalance}`,
         [
           { text: 'İptal', style: 'cancel' },
           { text: 'Elmas Satın Al', onPress: () => {} },
@@ -913,9 +1055,11 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       return;
     }
 
+    // Server'a gönder - UI güncellemesi gift:sent/gift:received event'lerinde yapılacak
+    console.log('[ChatScreen] 💸 Sending gift:', amount);
+
     Vibration.vibrate(50);
     const socket = getSocket();
-    console.log('[ChatScreen] Sending gift:', { fromUserId: user?.id, toUserId: partnerId, sessionId, amount });
     socket.emit('gift:send', {
       fromUserId: user?.id,
       toUserId: partnerId,
@@ -1166,7 +1310,7 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       </View>
       <Text style={styles.emptyTitle}>Sohbete Başla!</Text>
       <Text style={styles.emptySubtitle}>
-        İlk mesajı göndererek {partnerNickname} ile tanışmaya başla
+        İlk mesajı göndererek sohbete başla
       </Text>
       <View style={styles.emptyTips}>
         <View style={styles.emptyTipRow}>
@@ -1251,7 +1395,7 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             <Text style={styles.headerBrand}>CardMatch</Text>
             {isPartnerTyping && (
               <Animated.View style={{ opacity: typingAnimation }}>
-                <Text style={styles.typingText}>{partnerNickname} yazıyor...</Text>
+                <Text style={styles.typingText}>yazıyor...</Text>
               </Animated.View>
             )}
           </View>
@@ -1392,76 +1536,187 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
           </Animated.View>
         </View>
 
-        {/* Elmas Gönder Modal */}
+        {/* Elmas Gönder Modal - Yenilenmiş Tasarım */}
         <Modal
           visible={giftModalVisible}
           transparent
-          animationType="slide"
+          animationType="fade"
           onRequestClose={() => setGiftModalVisible(false)}
         >
-          <View style={styles.modalOverlay}>
-            <View style={styles.giftModalContent}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Elmas Gönder</Text>
-                <TouchableOpacity onPress={() => setGiftModalVisible(false)} style={styles.modalCloseIcon}>
-                  <Ionicons name="close" size={24} color={COLORS.text} />
-                </TouchableOpacity>
+          <TouchableOpacity 
+            style={styles.giftModalOverlay} 
+            activeOpacity={1} 
+            onPress={() => setGiftModalVisible(false)}
+          >
+            <TouchableOpacity activeOpacity={1} style={styles.giftModalContent}>
+              {/* Üst Dekorasyon */}
+              <View style={styles.giftModalHandle} />
+              
+              {/* Başlık */}
+              <View style={styles.giftModalHeader}>
+                <View style={styles.giftModalIconWrapper}>
+                  <LinearGradient
+                    colors={[COLORS.accent, '#5fb8b8']}
+                    style={styles.giftModalIconGradient}
+                  >
+                    <Ionicons name="diamond" size={28} color="#fff" />
+                  </LinearGradient>
+                </View>
+                <Text style={styles.giftModalTitle}>Elmas Hediye Et</Text>
+                <Text style={styles.giftModalSubtitle}>Anonim eşleşmene sürpriz yap</Text>
               </View>
               
-              <View style={styles.balanceRow}>
-                <Ionicons name="diamond" size={20} color={COLORS.accent} />
-                <Text style={styles.balanceText}>Bakiyeniz: {user?.tokenBalance || 0}</Text>
+              {/* Bakiye */}
+              <View style={styles.giftBalanceCard}>
+                <Ionicons name="wallet-outline" size={18} color={COLORS.accent} />
+                <Text style={styles.giftBalanceLabel}>Bakiyen</Text>
+                <View style={styles.giftBalanceAmount}>
+                  <Ionicons name="diamond" size={16} color={COLORS.accent} />
+                  <Text style={styles.giftBalanceValue}>{instantBalance}</Text>
+                </View>
               </View>
               
-              <Text style={styles.recipientText}>
-                {partnerNickname} kişisine gönder
-              </Text>
-              
-              <View style={styles.giftOptions}>
-                {GIFT_OPTIONS.map((option) => {
-                  const disabled = (user?.tokenBalance || 0) < option.amount;
+              {/* Elmas Seçenekleri */}
+              <View style={styles.giftOptionsRow}>
+                {GIFT_OPTIONS.map((option, index) => {
+                  const disabled = instantBalance < option.amount;
                   return (
                     <TouchableOpacity
                       key={option.amount}
-                      style={[styles.giftOption, disabled && styles.giftOptionDisabled]}
+                      style={[styles.giftOptionCard, disabled && styles.giftOptionCardDisabled]}
                       onPress={() => handleSendGift(option.amount)}
                       disabled={disabled}
                     >
                       <LinearGradient
-                        colors={disabled ? [COLORS.surface, COLORS.surface] : [COLORS.primary, COLORS.primaryDark]}
-                        style={styles.giftOptionGradient}
+                        colors={disabled 
+                          ? ['rgba(255,255,255,0.05)', 'rgba(255,255,255,0.02)'] 
+                          : index === 1 
+                            ? [COLORS.primary, COLORS.primaryDark] 
+                            : ['rgba(255,255,255,0.1)', 'rgba(255,255,255,0.05)']}
+                        style={styles.giftOptionCardGradient}
                       >
-                        <Ionicons name="diamond" size={24} color={disabled ? COLORS.textMuted : COLORS.accent} />
-                        <Text style={[styles.giftOptionAmount, disabled && styles.giftOptionAmountDisabled]}>
+                        {index === 1 && !disabled && (
+                          <View style={styles.giftPopularTag}>
+                            <Text style={styles.giftPopularTagText}>Popüler</Text>
+                          </View>
+                        )}
+                        <Text style={styles.giftOptionEmoji}>💎</Text>
+                        <Text style={[styles.giftOptionValue, disabled && styles.giftOptionValueDisabled]}>
                           {option.label}
                         </Text>
+                        <Text style={styles.giftOptionDesc}>elmas</Text>
                       </LinearGradient>
                     </TouchableOpacity>
                   );
                 })}
               </View>
 
-              <View style={styles.purchaseSection}>
-                <Text style={styles.purchaseSectionTitle}>Elmas Satın Al</Text>
-                <View style={styles.purchaseOptions}>
+              {/* Satın Al Bölümü */}
+              <View style={styles.giftPurchaseSection}>
+                <Text style={styles.giftPurchaseTitle}>💰 Elmas Satın Al</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.giftPurchaseScroll}>
                   {PURCHASE_OPTIONS.map((option) => (
                     <TouchableOpacity
                       key={option.tokens}
-                      style={[styles.purchaseOption, option.popular && styles.purchaseOptionPopular]}
+                      style={[styles.giftPurchaseCard, option.popular && styles.giftPurchaseCardPopular]}
                       onPress={() => handleQuickPurchase(option.tokens)}
                     >
                       {option.popular && (
-                        <View style={styles.popularBadge}>
-                          <Text style={styles.popularBadgeText}>Popüler</Text>
+                        <View style={styles.giftPurchaseBadge}>
+                          <Ionicons name="star" size={10} color="#fff" />
                         </View>
                       )}
-                      <Ionicons name="diamond" size={16} color={COLORS.accent} />
-                      <Text style={styles.purchaseTokens}>{option.tokens}</Text>
-                      <Text style={styles.purchasePrice}>{option.price}</Text>
+                      <Ionicons name="diamond" size={18} color={COLORS.accent} />
+                      <Text style={styles.giftPurchaseTokens}>{option.tokens}</Text>
+                      <Text style={styles.giftPurchasePrice}>{option.price}</Text>
                     </TouchableOpacity>
                   ))}
-                </View>
+                </ScrollView>
               </View>
+              
+              {/* Kapat Butonu */}
+              <TouchableOpacity 
+                style={styles.giftCloseButton} 
+                onPress={() => setGiftModalVisible(false)}
+              >
+                <Text style={styles.giftCloseButtonText}>Kapat</Text>
+              </TouchableOpacity>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </Modal>
+
+        {/* Gift Animation Overlay */}
+        {showGiftAnimation && (
+          <Animated.View 
+            style={[
+              styles.giftAnimationOverlay,
+              {
+                opacity: giftAnimationOpacity,
+              }
+            ]}
+            pointerEvents="none"
+          >
+            <Animated.View 
+              style={[
+                styles.giftAnimationContent,
+                {
+                  transform: [{ scale: giftAnimationScale }],
+                }
+              ]}
+            >
+              <Text style={styles.giftAnimationEmoji}>💎</Text>
+              <Text style={styles.giftAnimationAmount}>
+                {giftAnimationType === 'received' ? '+' : '-'}{giftAnimationAmount}
+              </Text>
+              <Text style={styles.giftAnimationText}>
+                {giftAnimationType === 'received' 
+                  ? 'Elmas hediye aldın!' 
+                  : 'Elmas gönderildi!'}
+              </Text>
+            </Animated.View>
+          </Animated.View>
+        )}
+
+        {/* Arkadaşlık İsteği Alert Modal */}
+        <Modal
+          visible={friendAlertVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setFriendAlertVisible(false)}
+        >
+          <View style={styles.friendAlertOverlay}>
+            <View style={styles.friendAlertContent}>
+              <View style={[
+                styles.friendAlertIconWrapper,
+                friendAlertType === 'success' && styles.friendAlertIconSuccess,
+                friendAlertType === 'info' && styles.friendAlertIconInfo,
+                friendAlertType === 'locked' && styles.friendAlertIconLocked,
+              ]}>
+                <Ionicons 
+                  name={
+                    friendAlertType === 'success' ? 'checkmark-circle' :
+                    friendAlertType === 'info' ? 'information-circle' : 'lock-closed'
+                  } 
+                  size={40} 
+                  color="#fff" 
+                />
+              </View>
+              <Text style={styles.friendAlertTitle}>
+                {friendAlertType === 'success' ? 'Başarılı!' :
+                 friendAlertType === 'info' ? 'Bilgi' : 'Kilitli'}
+              </Text>
+              <Text style={styles.friendAlertMessage}>{friendAlertMessage}</Text>
+              <TouchableOpacity 
+                style={[
+                  styles.friendAlertButton,
+                  friendAlertType === 'success' && styles.friendAlertButtonSuccess,
+                  friendAlertType === 'info' && styles.friendAlertButtonInfo,
+                  friendAlertType === 'locked' && styles.friendAlertButtonLocked,
+                ]}
+                onPress={() => setFriendAlertVisible(false)}
+              >
+                <Text style={styles.friendAlertButtonText}>Tamam</Text>
+              </TouchableOpacity>
             </View>
           </View>
         </Modal>
@@ -1532,7 +1787,7 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
               </View>
               
               <Text style={styles.reportModalSubtitle}>
-                {partnerNickname} kullanıcısını neden bildirmek istiyorsunuz?
+                Bu kullanıcıyı neden bildirmek istiyorsunuz?
               </Text>
               
               {['SPAM', 'HARASSMENT', 'FAKE_PROFILE', 'INAPPROPRIATE_CONTENT', 'OTHER'].map((cat) => (
@@ -1603,7 +1858,7 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
           </View>
         </Modal>
 
-        {/* Değerlendirme Modal - Sohbet Bittiğinde */}
+        {/* Değerlendirme Modal - Sohbet Bittiğinde (Anonim) */}
         <Modal
           visible={ratingModalVisible}
           transparent
@@ -1618,27 +1873,57 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
               
               <Text style={styles.ratingTitle}>Sohbet Sona Erdi</Text>
               <Text style={styles.ratingSubtitle}>
-                {partnerNickname} ile sohbetiniz nasıldı?
+                Bu sohbet nasıldı?
               </Text>
               
-              <View style={styles.ratingActions}>
+              {/* Ana Butonlar */}
+              <View style={styles.ratingMainActions}>
                 <TouchableOpacity 
-                  style={styles.ratingLikeButton}
+                  style={styles.ratingActionButton}
+                  activeOpacity={0.8}
                   onPress={() => handleRating('like')}
                 >
                   <LinearGradient
                     colors={[COLORS.success, '#27ae60']}
-                    style={styles.ratingButtonGradient}
+                    style={styles.ratingActionGradient}
                   >
-                    <Ionicons name="heart" size={24} color={COLORS.text} />
-                    <Text style={styles.ratingButtonText}>Beğendim</Text>
+                    <Ionicons name="heart" size={28} color="#fff" />
                   </LinearGradient>
+                  <Text style={styles.ratingActionText}>Beğendim</Text>
+                </TouchableOpacity>
+                
+                <TouchableOpacity 
+                  style={styles.ratingActionButton}
+                  activeOpacity={0.8}
+                  onPress={() => handleRating('dislike')}
+                >
+                  <LinearGradient
+                    colors={['#95a5a6', '#7f8c8d']}
+                    style={styles.ratingActionGradient}
+                  >
+                    <Ionicons name="heart-dislike" size={28} color="#fff" />
+                  </LinearGradient>
+                  <Text style={styles.ratingActionText}>Beğenmedim</Text>
+                </TouchableOpacity>
+              </View>
+              
+              {/* Alt Butonlar */}
+              <View style={styles.ratingSecondaryActions}>
+                <TouchableOpacity 
+                  style={styles.ratingReportButton}
+                  activeOpacity={0.7}
+                  onPress={() => handleRating('report')}
+                >
+                  <Ionicons name="flag" size={18} color={COLORS.error} />
+                  <Text style={styles.ratingReportText}>Bildir</Text>
                 </TouchableOpacity>
                 
                 <TouchableOpacity 
                   style={styles.ratingSkipButton}
+                  activeOpacity={0.7}
                   onPress={() => handleRating('skip')}
                 >
+                  <Ionicons name="arrow-forward" size={18} color={COLORS.textMuted} />
                   <Text style={styles.ratingSkipText}>Geç</Text>
                 </TouchableOpacity>
               </View>
@@ -1657,12 +1942,21 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
               setIsMediaAlreadyPaid(false);
             }}
             onViewed={(msgId, mType) => {
-              console.log(`[ChatScreen] Media viewed: ${msgId}, type: ${mType}`);
-              setViewedMediaIds(prev => new Set(prev).add(msgId));
-              // Mesajı güncelle (locked = false)
-              setMessages(prev => prev.map(m => 
-                m.id === msgId ? { ...m, locked: false } : m
-              ));
+              console.log(`[ChatScreen] Media viewed and will be deleted: ${msgId}, type: ${mType}`);
+              
+              // Sunucuya silme isteği gönder
+              const socket = getSocket();
+              if (socket) {
+                socket.emit('media:delete', {
+                  messageId: msgId,
+                  sessionId,
+                });
+              }
+              
+              // Görüntülendikten sonra mesajı listeden sil (Snapchat tarzı)
+              setTimeout(() => {
+                setMessages(prev => prev.filter(m => m.id !== msgId));
+              }, 500); // Kısa gecikme ile animasyonlu kapanma
             }}
             imageUrl={selectedMedia.mediaUrl || ''}
             messageId={selectedMedia.id}
@@ -1670,7 +1964,7 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             isMine={selectedMedia.senderId === user?.id}
             isFirstFreeView={isCurrentMediaFirstFree}
             elmasCost={selectedMedia.mediaType === 'video' ? ELMAS_COSTS.viewVideo : ELMAS_COSTS.viewPhoto}
-            userElmasBalance={user?.tokenBalance || 0}
+            userElmasBalance={instantBalance}
             onViewWithElmas={handleViewWithTokens}
             onRequestElmas={handleRequestElmas}
             onPurchaseElmas={() => {
@@ -1681,6 +1975,87 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
             senderNickname={partnerNickname}
             isInstantPhoto={selectedMedia.isInstant || false}
           />
+        )}
+
+        {/* Medya Seçici Modal (Android için) */}
+        {Platform.OS === 'android' && (
+          <Modal
+            visible={mediaPickerVisible}
+            transparent
+            animationType="slide"
+            onRequestClose={() => setMediaPickerVisible(false)}
+          >
+            <View style={styles.mediaPickerOverlay}>
+              <TouchableOpacity 
+                style={styles.mediaPickerBackdrop}
+                activeOpacity={1}
+                onPress={() => setMediaPickerVisible(false)}
+              />
+              <View style={styles.mediaPickerContent}>
+                <View style={styles.mediaPickerHandle} />
+                
+                <Text style={styles.mediaPickerTitle}>
+                  {mediaPickerType === 'photo' ? 'Fotoğraf Gönder' : 'Video Gönder'}
+                </Text>
+                
+                <View style={styles.mediaPickerOptions}>
+                  <TouchableOpacity 
+                    style={styles.mediaPickerOption}
+                    activeOpacity={0.7}
+                    onPress={() => {
+                      setMediaPickerVisible(false);
+                      setTimeout(() => {
+                        if (mediaPickerType === 'photo') {
+                          sendPhotoFromCamera(true);
+                        } else {
+                          pickVideoFromCamera();
+                        }
+                      }, 300);
+                    }}
+                  >
+                    <View style={[styles.mediaPickerOptionIcon, { backgroundColor: COLORS.accent }]}>
+                      <Ionicons name="camera" size={32} color="#fff" />
+                    </View>
+                    <Text style={styles.mediaPickerOptionText}>Anlık Çek</Text>
+                    <Text style={styles.mediaPickerOptionSubtext}>
+                      {mediaPickerType === 'photo' ? 'Şimdi fotoğraf çek' : 'Şimdi video çek'}
+                    </Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity 
+                    style={styles.mediaPickerOption}
+                    activeOpacity={0.7}
+                    onPress={() => {
+                      setMediaPickerVisible(false);
+                      setTimeout(() => {
+                        if (mediaPickerType === 'photo') {
+                          sendPhotoFromGallery(false);
+                        } else {
+                          pickVideoFromGallery();
+                        }
+                      }, 300);
+                    }}
+                  >
+                    <View style={[styles.mediaPickerOptionIcon, { backgroundColor: '#9b59b6' }]}>
+                      <Ionicons name="images" size={32} color="#fff" />
+                    </View>
+                    <Text style={styles.mediaPickerOptionText}>Galeriden</Text>
+                    <Text style={styles.mediaPickerOptionSubtext}>
+                      {mediaPickerType === 'photo' ? 'Mevcut fotoğraf seç' : 'Mevcut video seç'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                
+                <TouchableOpacity 
+                  style={styles.mediaPickerCancel}
+                  activeOpacity={0.7}
+                  onPress={() => setMediaPickerVisible(false)}
+                >
+                  <Text style={styles.mediaPickerCancelText}>İptal</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </Modal>
         )}
 
         {/* Video Önizleme */}
@@ -2039,13 +2414,294 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
     justifyContent: 'flex-end',
   },
+  // Yeni Gift Modal Styles
+  giftModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'flex-end',
+  },
   giftModalContent: {
     backgroundColor: COLORS.surface,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: SPACING.xl,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: SPACING.lg,
     paddingBottom: SPACING.xl + 20,
   },
+  giftModalHandle: {
+    width: 40,
+    height: 4,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginTop: SPACING.md,
+    marginBottom: SPACING.lg,
+  },
+  giftModalHeader: {
+    alignItems: 'center',
+    marginBottom: SPACING.lg,
+  },
+  giftModalIconWrapper: {
+    marginBottom: SPACING.sm,
+  },
+  giftModalIconGradient: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  giftModalTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: COLORS.text,
+    marginBottom: 4,
+  },
+  giftModalSubtitle: {
+    fontSize: 14,
+    color: COLORS.textMuted,
+  },
+  giftBalanceCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.sm,
+    padding: SPACING.md,
+    backgroundColor: 'rgba(125, 212, 212, 0.1)',
+    borderRadius: 16,
+    marginBottom: SPACING.lg,
+    borderWidth: 1,
+    borderColor: 'rgba(125, 212, 212, 0.2)',
+  },
+  giftBalanceLabel: {
+    fontSize: 14,
+    color: COLORS.textMuted,
+  },
+  giftBalanceAmount: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginLeft: SPACING.sm,
+  },
+  giftBalanceValue: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: COLORS.accent,
+  },
+  giftOptionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: SPACING.sm,
+    marginBottom: SPACING.lg,
+  },
+  giftOptionCard: {
+    flex: 1,
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  giftOptionCardDisabled: {
+    opacity: 0.4,
+  },
+  giftOptionCardGradient: {
+    paddingVertical: SPACING.lg,
+    alignItems: 'center',
+    position: 'relative',
+  },
+  giftPopularTag: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    backgroundColor: COLORS.accent,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  giftPopularTagText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#000',
+  },
+  giftOptionEmoji: {
+    fontSize: 28,
+    marginBottom: 4,
+  },
+  giftOptionValue: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  giftOptionValueDisabled: {
+    color: COLORS.textMuted,
+  },
+  giftOptionDesc: {
+    fontSize: 11,
+    color: COLORS.textMuted,
+    marginTop: 2,
+  },
+  giftPurchaseSection: {
+    marginBottom: SPACING.md,
+  },
+  giftPurchaseTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.textMuted,
+    marginBottom: SPACING.sm,
+  },
+  giftPurchaseScroll: {
+    marginHorizontal: -SPACING.sm,
+  },
+  giftPurchaseCard: {
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderRadius: 12,
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.md,
+    alignItems: 'center',
+    marginHorizontal: 4,
+    minWidth: 70,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  giftPurchaseCardPopular: {
+    borderColor: COLORS.accent,
+    backgroundColor: 'rgba(125, 212, 212, 0.1)',
+  },
+  giftPurchaseBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    backgroundColor: COLORS.accent,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  giftPurchaseTokens: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.text,
+    marginTop: 2,
+  },
+  giftPurchasePrice: {
+    fontSize: 11,
+    color: COLORS.textMuted,
+  },
+  giftCloseButton: {
+    alignSelf: 'center',
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.xl,
+  },
+  giftCloseButtonText: {
+    fontSize: 14,
+    color: COLORS.textMuted,
+  },
+  // Gift Animation Overlay
+  giftAnimationOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    zIndex: 9999,
+  },
+  giftAnimationContent: {
+    alignItems: 'center',
+    backgroundColor: COLORS.surface,
+    paddingVertical: SPACING.xl,
+    paddingHorizontal: SPACING.xl * 2,
+    borderRadius: 24,
+    borderWidth: 2,
+    borderColor: COLORS.accent,
+    shadowColor: COLORS.accent,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  giftAnimationEmoji: {
+    fontSize: 64,
+    marginBottom: SPACING.sm,
+  },
+  giftAnimationAmount: {
+    fontSize: 36,
+    fontWeight: '800',
+    color: COLORS.accent,
+    marginBottom: SPACING.xs,
+  },
+  giftAnimationText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  // Arkadaşlık İsteği Alert Modal
+  friendAlertOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: SPACING.xl,
+  },
+  friendAlertContent: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 24,
+    padding: SPACING.xl,
+    alignItems: 'center',
+    width: '90%',
+    maxWidth: 320,
+    borderWidth: 1,
+    borderColor: 'rgba(125, 212, 212, 0.2)',
+  },
+  friendAlertIconWrapper: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: SPACING.lg,
+  },
+  friendAlertIconSuccess: {
+    backgroundColor: COLORS.success,
+  },
+  friendAlertIconInfo: {
+    backgroundColor: COLORS.accent,
+  },
+  friendAlertIconLocked: {
+    backgroundColor: COLORS.warning,
+  },
+  friendAlertTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: COLORS.text,
+    marginBottom: SPACING.sm,
+    textAlign: 'center',
+  },
+  friendAlertMessage: {
+    fontSize: 15,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: SPACING.xl,
+  },
+  friendAlertButton: {
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.xxl,
+    borderRadius: 16,
+    minWidth: 140,
+    alignItems: 'center',
+  },
+  friendAlertButtonSuccess: {
+    backgroundColor: COLORS.success,
+  },
+  friendAlertButtonInfo: {
+    backgroundColor: COLORS.accent,
+  },
+  friendAlertButtonLocked: {
+    backgroundColor: COLORS.warning,
+  },
+  friendAlertButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  // Legacy styles (keep for compatibility)
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -2330,29 +2986,60 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: SPACING.xl,
   },
-  ratingActions: {
-    width: '100%',
-    gap: SPACING.md,
-  },
-  ratingLikeButton: {
-    borderRadius: 16,
-    overflow: 'hidden',
-  },
-  ratingButtonGradient: {
+  ratingMainActions: {
     flexDirection: 'row',
+    justifyContent: 'center',
+    gap: SPACING.xl,
+    marginBottom: SPACING.xl,
+  },
+  ratingActionButton: {
+    alignItems: 'center',
+    width: 100,
+  },
+  ratingActionGradient: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: SPACING.md,
-    gap: SPACING.sm,
+    marginBottom: SPACING.sm,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
   },
-  ratingButtonText: {
-    fontSize: 16,
+  ratingActionText: {
+    fontSize: 14,
     fontWeight: '600',
     color: COLORS.text,
   },
-  ratingSkipButton: {
-    paddingVertical: SPACING.md,
+  ratingSecondaryActions: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: SPACING.xl,
+    width: '100%',
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.1)',
+    paddingTop: SPACING.lg,
+  },
+  ratingReportButton: {
+    flexDirection: 'row',
     alignItems: 'center',
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.lg,
+    gap: SPACING.xs,
+  },
+  ratingReportText: {
+    fontSize: 14,
+    color: COLORS.error,
+  },
+  ratingSkipButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.lg,
+    gap: SPACING.xs,
   },
   ratingSkipText: {
     fontSize: 14,
@@ -2432,6 +3119,84 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: COLORS.text,
+  },
+  // Medya Seçici Modal Stilleri
+  mediaPickerOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  mediaPickerBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  mediaPickerContent: {
+    backgroundColor: COLORS.surface,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    padding: SPACING.xl,
+    paddingBottom: SPACING.xl + 20,
+    alignItems: 'center',
+  },
+  mediaPickerHandle: {
+    width: 40,
+    height: 4,
+    backgroundColor: COLORS.textMuted,
+    borderRadius: 2,
+    marginBottom: SPACING.lg,
+  },
+  mediaPickerTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: COLORS.text,
+    marginBottom: SPACING.xl,
+  },
+  mediaPickerOptions: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: SPACING.xl,
+    marginBottom: SPACING.xl,
+  },
+  mediaPickerOption: {
+    alignItems: 'center',
+    width: 120,
+    padding: SPACING.md,
+  },
+  mediaPickerOptionIcon: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: SPACING.md,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  mediaPickerOptionText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.text,
+    marginBottom: 4,
+  },
+  mediaPickerOptionSubtext: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+  },
+  mediaPickerCancel: {
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.xxl,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 12,
+    minWidth: 160,
+    alignItems: 'center',
+  },
+  mediaPickerCancelText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.textMuted,
   },
 });
 

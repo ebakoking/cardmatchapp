@@ -136,15 +136,22 @@ const PhoneVerificationScreen: React.FC<Props> = ({ navigation }) => {
       setErrorMessage(null);
       const res = await api.post('/api/auth/request-otp', { phoneNumber: fullPhoneNumber });
       
-      // Sadece development modunda debug OTP göster
-      if (__DEV__ && res.data.debugOtp) {
-        setDebugOtp(res.data.debugOtp);
+      // Test OTP göster (development veya test mode)
+      if (res.data.debugOtp || res.data.testOtp) {
+        setDebugOtp(res.data.debugOtp || res.data.testOtp);
       }
       
       setStep('code');
       setResendCooldown(RESEND_COOLDOWN);
     } catch (error: any) {
-      const message = error.response?.data?.error?.message || 'SMS gönderilemedi. Lütfen tekrar deneyin.';
+      let message = 'SMS gönderilemedi. Lütfen tekrar deneyin.';
+      
+      if (!error.response && error.message === 'Network Error') {
+        message = 'İnternet bağlantısı yok. Lütfen bağlantını kontrol et.';
+      } else if (error.response?.data?.error?.message) {
+        message = error.response.data.error.message;
+      }
+      
       setErrorMessage(message);
     } finally {
       setLoading(false);
@@ -354,8 +361,8 @@ const PhoneVerificationScreen: React.FC<Props> = ({ navigation }) => {
           </View>
         )}
         
-        {/* Debug OTP - Sadece development modunda */}
-        {__DEV__ && debugOtp && (
+        {/* Debug OTP - Test modunda göster */}
+        {debugOtp && (
           <View style={styles.debugBox}>
             <Text style={styles.debugLabel}>🔧 Test OTP:</Text>
             <Text style={styles.debugCode}>{debugOtp}</Text>

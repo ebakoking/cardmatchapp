@@ -1,8 +1,10 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
+import * as Notifications from 'expo-notifications';
 import { api, resetAuthMeThrottle } from '../services/api';
 import { getSocket, joinUserRoom, leaveUserRoom } from '../services/socket';
+import { registerPushToken } from '../services/notifications';
 
 // ============ USER INTERFACE ============
 export interface User {
@@ -46,6 +48,8 @@ interface AuthContextValue {
   token: string | null;
   loading: boolean;
   onboardingCompleted: boolean;
+  // 🚀 ANLIK: Ayrı balance state - hızlı güncelleme için
+  instantBalance: number;
   // Yeni loginWithToken - refresh token destekli
   loginWithToken: (accessToken: string, refreshToken: string, user: User) => Promise<void>;
   logout: () => Promise<void>;
@@ -82,6 +86,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
   const [onboardingCompleted, setOnboardingCompleted] = useState(false);
   
+  // 🚀 ANLIK BAKİYE: Ayrı state - daha hızlı güncelleme için
+  const [instantBalance, setInstantBalance] = useState<number>(0);
+  
   // Token refresh lock (çift refresh önleme)
   const isRefreshing = useRef(false);
   // Logout işlemi sırasında state güncellemelerini engelle
@@ -103,12 +110,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     source: string,
     preserveBalance: boolean = true
   ) => {
+    // Önce next değerini hesapla (instantBalance için)
+    const nextValue = typeof updater === 'function' ? null : updater;
+    
     setUser((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
       
       // null set ediliyor (logout)
       if (next === null) {
         console.log(`[AuthContext] 👤 setUserSafe source=${source} -> null`);
+        setInstantBalance(0);
         return null;
       }
       
@@ -116,6 +127,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!prev) {
         console.log(`[AuthContext] 👤 setUserSafe source=${source} -> FIRST LOAD, balance: ${next?.tokenBalance}`);
         balanceRevRef.current = Date.now();
+        // 🚀 ANLIK: instantBalance'ı da güncelle
+        if (next.tokenBalance !== undefined) {
+          setInstantBalance(next.tokenBalance);
+        }
         return next;
       }
       
@@ -133,6 +148,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Balance dahil tüm alanlar güncelleniyor
         console.log(`[AuthContext] 👤 setUserSafe source=${source} FULL UPDATE: ${prev.tokenBalance} -> ${next.tokenBalance}`);
         balanceRevRef.current = Date.now();
+        // 🚀 ANLIK: instantBalance'ı da güncelle
+        if (next.tokenBalance !== undefined) {
+          setInstantBalance(next.tokenBalance);
+        }
         return next;
       }
     });
@@ -149,6 +168,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (incoming.tokenBalance === undefined && incoming.monthlySparksEarned === undefined) {
       console.log(`[AuthContext] ⏭️ applyBalance SKIPPED (empty) - source: ${source}`);
       return;
+    }
+    
+    // 🚀 ANLIK: Ayrı balance state'i de güncelle
+    if (incoming.tokenBalance !== undefined) {
+      console.log(`[AuthContext] 🚀 INSTANT balance update: ${incoming.tokenBalance} (source: ${source})`);
+      setInstantBalance(incoming.tokenBalance);
     }
     
     setUser((prev) => {
@@ -325,6 +350,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       applyBalance({ tokenBalance: payload.newBalance }, 'token:spent');
     };
 
+    const handleTokenEarned = (payload: { amount: number; newBalance: number; reason?: string }) => {
+      console.log('[AuthContext] 💎 token:earned received - amount:', payload.amount, 'newBalance:', payload.newBalance, 'reason:', payload.reason);
+      applyBalance({ tokenBalance: payload.newBalance }, 'token:earned');
+    };
+
     const handleSparkEarned = (payload: { amount: number; monthlySparksEarned?: number; totalSparksEarned?: number }) => {
       console.log('[AuthContext] ✨ spark:earned received - amount:', payload.amount);
       applyBalance({ 
@@ -342,27 +372,103 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
     };
 
+    // 🔔 Arkadaş bildirimi - local notification göster
+    const handleFriendNotification = async (payload: { 
+      type: string; 
+      friendshipId: string; 
+      senderId: string; 
+      senderNickname: string; 
+      preview: string; 
+      timestamp: string;
+    }) => {
+      console.log('[AuthContext] 🔔 Friend notification:', payload);
+      
+      // Local notification göster
+      try {
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: `💬 ${payload.senderNickname}`,
+            body: payload.preview,
+            data: { 
+              type: 'friend_message',
+              friendshipId: payload.friendshipId,
+              senderId: payload.senderId,
+            },
+            sound: 'default',
+          },
+          trigger: null, // Hemen göster
+        });
+      } catch (error) {
+        console.log('[AuthContext] Notification error:', error);
+      }
+    };
+    
+    // 📞 Gelen arama bildirimi
+    const handleIncomingCall = async (payload: { 
+      fromUserId: string; 
+      fromNickname: string; 
+      fromPhoto?: string;
+      callType: 'voice' | 'video';
+      friendshipId: string;
+      toUserId?: string;
+    }) => {
+      console.log('[AuthContext] 📞 Incoming call:', payload);
+      
+      // 🚨 Kendi aramam ise bildirimi gösterme!
+      if (payload.fromUserId === user?.id) {
+        console.log('[AuthContext] 📞 Ignoring - I am the caller');
+        return;
+      }
+      
+      // Local notification göster
+      try {
+        const callTypeText = payload.callType === 'video' ? '📹 Görüntülü' : '📞 Sesli';
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: `${callTypeText} Arama`,
+            body: `${payload.fromNickname} sizi arıyor...`,
+            data: { 
+              type: 'incoming_call',
+              friendshipId: payload.friendshipId,
+              fromUserId: payload.fromUserId,
+              callType: payload.callType,
+            },
+            sound: 'default',
+          },
+          trigger: null, // Hemen göster
+        });
+      } catch (error) {
+        console.log('[AuthContext] Call notification error:', error);
+      }
+    };
+
     // Listeners ekle
+    socket.on('friend:notification', handleFriendNotification);
+    socket.on('friend:call:incoming', handleIncomingCall);
     socket.on('friend:gift:received', handleGiftReceived);
     socket.on('friend:gift:sent', handleGiftSent);
     socket.on('gift:received', handleGiftReceived);
     socket.on('gift:sent', handleGiftSent);
     socket.on('token:balance_updated', handleTokenBalanceUpdated);
     socket.on('token:spent', handleTokenSpent);
+    socket.on('token:earned', handleTokenEarned);
     socket.on('spark:earned', handleSparkEarned);
     socket.on('prime:updated', handlePrimeUpdated);
 
     return () => {
+      socket.off('friend:notification', handleFriendNotification);
+      socket.off('friend:call:incoming', handleIncomingCall);
       socket.off('friend:gift:received', handleGiftReceived);
       socket.off('friend:gift:sent', handleGiftSent);
       socket.off('gift:received', handleGiftReceived);
       socket.off('gift:sent', handleGiftSent);
       socket.off('token:balance_updated', handleTokenBalanceUpdated);
       socket.off('token:spent', handleTokenSpent);
+      socket.off('token:earned', handleTokenEarned);
       socket.off('spark:earned', handleSparkEarned);
       socket.off('prime:updated', handlePrimeUpdated);
     };
-  }, [user?.id]);
+  }, [user?.id, applyBalance]);
 
   // ============ HELPER FUNCTIONS ============
   
@@ -422,6 +528,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     
     // Socket room'a katıl
     joinUserRoom(userData.id);
+    
+    // Push token kaydet (arka planda)
+    registerPushToken().catch(err => console.log('[AuthContext] Push token error:', err));
     
     // Onboarding durumunu kontrol et
     const onboardingStatus = await AsyncStorage.getItem(`onboarding_completed_${userData.id}`);
@@ -563,6 +672,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         token, 
         loading, 
         onboardingCompleted,
+        instantBalance,
         loginWithToken, 
         logout, 
         refreshProfile,

@@ -26,16 +26,8 @@ import { useAuth } from '../../context/AuthContext';
 type Props = NativeStackScreenProps<FriendsStackParamList, 'FriendsList'>;
 
 // Avatar listesi
-const AVATARS = [
-  { id: 1, emoji: '👤', color: '#6C5CE7' },
-  { id: 2, emoji: '👩', color: '#E84393' },
-  { id: 3, emoji: '🧔', color: '#00B894' },
-  { id: 4, emoji: '👩‍🦱', color: '#FDCB6E' },
-  { id: 5, emoji: '🤓', color: '#0984E3' },
-  { id: 6, emoji: '🧢', color: '#D63031' },
-  { id: 7, emoji: '🎧', color: '#00CEC9' },
-  { id: 8, emoji: '👱‍♀️', color: '#A29BFE' },
-];
+// Avatar listesi - merkezi dosyadan import
+import { AVATARS, getAvatar } from '../../constants/avatars';
 
 interface LastMessage {
   content?: string | null;
@@ -72,6 +64,7 @@ interface IncomingCall {
   fromUserId: string;
   fromNickname: string;
   fromPhoto?: string;
+  fromAvatarId?: number;
   friendshipId: string;
   callType: 'voice' | 'video';
 }
@@ -83,6 +76,9 @@ const FriendsScreen: React.FC<Props> = ({ navigation }) => {
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<'friends' | 'requests'>('friends');
   const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
+  const [friendAlertVisible, setFriendAlertVisible] = useState(false);
+  const [friendAlertType, setFriendAlertType] = useState<'success' | 'error' | 'reject'>('success');
+  const [friendAlertMessage, setFriendAlertMessage] = useState('');
 
   const loadFriends = async () => {
     try {
@@ -151,17 +147,52 @@ const FriendsScreen: React.FC<Props> = ({ navigation }) => {
       loadRequests();
     };
 
-    // Yeni mesaj geldiğinde - listeyi güncelle
+    // Yeni mesaj geldiğinde - listeyi güncelle (chat room'undayken)
     const handleNewMessage = (data: { friendChatId: string; senderId: string }) => {
-      console.log('[FriendsScreen] friend:message', data);
+      console.log('[FriendsScreen] friend:message (via ROOM)', JSON.stringify(data));
       if (data.senderId !== user?.id) {
         loadFriends(); // Okunmamış sayısını güncellemek için
       }
+    };
+    
+    // 🔔 Bildirim geldiğinde - listeyi güncelle (userId room'a gelir)
+    const handleFriendNotification = (data: { 
+      type: string; 
+      friendshipId: string; 
+      senderId: string; 
+      senderNickname: string;
+      preview: string;
+    }) => {
+      console.log('[FriendsScreen] friend:notification (via USER ID)', JSON.stringify(data));
+      // Listeyi yenile (unread count güncellenir)
+      loadFriends();
+      
+      // Alternatif: Sadece ilgili arkadaşın unread count'unu artır (daha hızlı)
+      setFriends(prev => prev.map(friend => 
+        friend.friendshipId === data.friendshipId
+          ? { 
+              ...friend, 
+              unreadCount: (friend.unreadCount || 0) + 1,
+              lastMessage: {
+                content: data.preview,
+                senderId: data.senderId,
+                createdAt: new Date().toISOString(),
+              }
+            }
+          : friend
+      ));
     };
 
     // Gelen arama
     const handleIncomingCall = (data: IncomingCall) => {
       console.log('[FriendsScreen] friend:call:incoming', data);
+      
+      // 🚨 Kendi aramam ise modal gösterme!
+      if (data.fromUserId === user?.id) {
+        console.log('[FriendsScreen] Ignoring - I am the caller');
+        return;
+      }
+      
       setIncomingCall(data);
       Vibration.vibrate([0, 500, 200, 500, 200, 500]); // Titreşim
     };
@@ -171,20 +202,38 @@ const FriendsScreen: React.FC<Props> = ({ navigation }) => {
       setIncomingCall(null);
     };
 
+    // 🟢 Kullanıcı online/offline durumu değiştiğinde
+    const handleUserStatus = (data: { userId: string; isOnline: boolean; lastSeenAt?: string }) => {
+      console.log('[FriendsScreen] user:status', data);
+      setFriends(prev => prev.map(friend => 
+        friend.id === data.userId
+          ? { 
+              ...friend, 
+              isOnline: data.isOnline,
+              lastSeenAt: data.lastSeenAt || friend.lastSeenAt,
+            }
+          : friend
+      ));
+    };
+
     socket.on('friend:request:received', handleRequestReceived);
     socket.on('friend:accepted', handleFriendAccepted);
     socket.on('friend:rejected', handleFriendRejected);
     socket.on('friend:message', handleNewMessage);
+    socket.on('friend:notification', handleFriendNotification);
     socket.on('friend:call:incoming', handleIncomingCall);
     socket.on('friend:call:ended', handleCallEnded);
+    socket.on('user:status', handleUserStatus);
 
     return () => {
       socket.off('friend:request:received', handleRequestReceived);
       socket.off('friend:accepted', handleFriendAccepted);
       socket.off('friend:rejected', handleFriendRejected);
       socket.off('friend:message', handleNewMessage);
+      socket.off('friend:notification', handleFriendNotification);
       socket.off('friend:call:incoming', handleIncomingCall);
       socket.off('friend:call:ended', handleCallEnded);
+      socket.off('user:status', handleUserStatus);
     };
   }, [user?.id]);
 
@@ -198,31 +247,55 @@ const FriendsScreen: React.FC<Props> = ({ navigation }) => {
     try {
       setRequests((prev) => prev.filter((r) => r.id !== requestId));
       await api.post(`/api/user/friend-requests/${requestId}/respond`, { accept });
-      Alert.alert(
-        accept ? 'Kabul Edildi' : 'Reddedildi',
-        accept ? 'Arkadaşlık isteği kabul edildi.' : 'Arkadaşlık isteği reddedildi.',
-      );
+      setFriendAlertType(accept ? 'success' : 'reject');
+      setFriendAlertMessage(accept ? 'Arkadaşlık isteği kabul edildi.' : 'Arkadaşlık isteği reddedildi.');
+      setFriendAlertVisible(true);
+      if (accept) {
+        loadFriends();
+      }
     } catch {
       loadRequests();
-      Alert.alert('Hata', 'İşlem gerçekleştirilemedi.');
+      setFriendAlertType('error');
+      setFriendAlertMessage('İşlem gerçekleştirilemedi.');
+      setFriendAlertVisible(true);
     }
   };
 
-  const handleRemoveFriend = async (friendshipId: string, nickname: string) => {
+  const handleRemoveFriend = async (friendshipId: string, nickname: string, friendId: string) => {
     Alert.alert(
-      'Arkadaşlıktan Çıkar',
-      `${nickname} arkadaş listenizden çıkarılsın mı?`,
+      'Arkadaş Seçenekleri',
+      `${nickname} için ne yapmak istiyorsun?`,
       [
         { text: 'İptal', style: 'cancel' },
         {
-          text: 'Çıkar',
-          style: 'destructive',
+          text: 'Arkadaşlıktan Çıkar',
           onPress: async () => {
             try {
               await api.delete(`/api/user/friends/${friendshipId}`);
               setFriends((prev) => prev.filter((f) => f.friendshipId !== friendshipId));
+              setFriendAlertType('success');
+              setFriendAlertMessage('Arkadaşlıktan çıkarıldı.');
+              setFriendAlertVisible(true);
             } catch {
               Alert.alert('Hata', 'Arkadaşlıktan çıkarılamadı.');
+            }
+          },
+        },
+        {
+          text: 'Engelle',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // Önce arkadaşlıktan çıkar
+              await api.delete(`/api/user/friends/${friendshipId}`);
+              // Sonra engelle
+              await api.post('/api/user/block', { blockedId: friendId });
+              setFriends((prev) => prev.filter((f) => f.friendshipId !== friendshipId));
+              setFriendAlertType('success');
+              setFriendAlertMessage('Kullanıcı engellendi. Artık size ulaşamaz.');
+              setFriendAlertVisible(true);
+            } catch {
+              Alert.alert('Hata', 'Engelleme işlemi başarısız.');
             }
           },
         },
@@ -233,18 +306,13 @@ const FriendsScreen: React.FC<Props> = ({ navigation }) => {
   // Gelen aramayı kabul et
   const handleAcceptCall = () => {
     if (!incomingCall) return;
-    const socket = getSocket();
-    socket.emit('friend:call:answer', {
-      fromUserId: incomingCall.fromUserId,
-      toUserId: user?.id,
-      friendshipId: incomingCall.friendshipId,
-      accept: true,
-    });
     setIncomingCall(null);
+    // FriendCallScreen'e git, orada socket.emit yapılacak
     navigation.navigate('FriendCall', {
       friendshipId: incomingCall.friendshipId,
       friendNickname: incomingCall.fromNickname,
       friendPhoto: incomingCall.fromPhoto,
+      friendAvatarId: incomingCall.fromAvatarId,
       friendId: incomingCall.fromUserId,
       callType: incomingCall.callType,
       isIncoming: true,
@@ -255,18 +323,14 @@ const FriendsScreen: React.FC<Props> = ({ navigation }) => {
   const handleRejectCall = () => {
     if (!incomingCall) return;
     const socket = getSocket();
-    socket.emit('friend:call:answer', {
-      fromUserId: incomingCall.fromUserId,
-      toUserId: user?.id,
+    socket.emit('friend:call:reject', {
       friendshipId: incomingCall.friendshipId,
-      accept: false,
+      callerId: incomingCall.fromUserId, // Arayanın ID'si
     });
     setIncomingCall(null);
   };
 
-  const getAvatar = (avatarId: number = 1) => {
-    return AVATARS.find((a) => a.id === avatarId) || AVATARS[0];
-  };
+  // getAvatar artık merkezi dosyadan import ediliyor
 
   // Son mesaj önizlemesi
   const getLastMessagePreview = (lastMessage?: LastMessage | null) => {
@@ -301,11 +365,12 @@ const FriendsScreen: React.FC<Props> = ({ navigation }) => {
             friendshipId: item.friendshipId,
             friendNickname: item.nickname,
             friendPhoto: item.profilePhoto,
+            friendAvatarId: item.avatarId,
             friendOnline: item.isOnline,
             friendId: item.id,
           })
         }
-        onLongPress={() => handleRemoveFriend(item.friendshipId, item.nickname)}
+        onLongPress={() => handleRemoveFriend(item.friendshipId, item.nickname, item.id)}
       >
         <View style={styles.avatarWrapper}>
           {item.profilePhoto ? (
@@ -472,37 +537,103 @@ const FriendsScreen: React.FC<Props> = ({ navigation }) => {
         />
       )}
 
-      {/* Gelen Arama Modalı */}
+      {/* Gelen Arama Modalı - Uygulama Temasına Uygun */}
       <Modal visible={!!incomingCall} transparent animationType="fade">
         <View style={styles.callModalOverlay}>
           <View style={styles.callModal}>
-            <View style={styles.callTypeIcon}>
+            {/* Arama Tipi Badge */}
+            <View style={styles.callTypeBadge}>
               <Ionicons 
                 name={incomingCall?.callType === 'video' ? 'videocam' : 'call'} 
-                size={40} 
-                color={COLORS.primary} 
+                size={16} 
+                color={COLORS.text} 
               />
+              <Text style={styles.callTypeBadgeText}>
+                {incomingCall?.callType === 'video' ? 'Görüntülü Arama' : 'Sesli Arama'}
+              </Text>
             </View>
-            <Text style={styles.callTitle}>
-              {incomingCall?.callType === 'video' ? 'Görüntülü Arama' : 'Sesli Arama'}
-            </Text>
+            
+            {/* Arayan Profil */}
+            <View style={styles.callerProfile}>
+              {incomingCall?.fromPhoto ? (
+                <View style={styles.callerPhotoWrapper}>
+                  <ProfilePhoto uri={incomingCall.fromPhoto} size={100} />
+                </View>
+              ) : (
+                <View style={[styles.callerAvatarCircle, { backgroundColor: getAvatar(incomingCall?.fromAvatarId).color }]}>
+                  <Text style={styles.callerAvatarEmoji}>{getAvatar(incomingCall?.fromAvatarId).emoji}</Text>
+                </View>
+              )}
+            </View>
+            
             <Text style={styles.callerName}>{incomingCall?.fromNickname}</Text>
             <Text style={styles.callSubtext}>sizi arıyor...</Text>
             
+            {/* Butonlar */}
             <View style={styles.callActions}>
-              <TouchableOpacity 
-                style={[styles.callActionButton, styles.rejectCallButton]}
-                onPress={handleRejectCall}
-              >
-                <Ionicons name="close" size={32} color="#fff" />
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.callActionButton, styles.acceptCallButton]}
-                onPress={handleAcceptCall}
-              >
-                <Ionicons name="call" size={32} color="#fff" />
-              </TouchableOpacity>
+              <View style={styles.callActionWrapper}>
+                <TouchableOpacity 
+                  style={[styles.callActionButton, styles.rejectCallButton]}
+                  onPress={handleRejectCall}
+                >
+                  <Ionicons name="call" size={28} color="#fff" style={{ transform: [{ rotate: '135deg' }] }} />
+                </TouchableOpacity>
+                <Text style={styles.callActionLabel}>Reddet</Text>
+              </View>
+              <View style={styles.callActionWrapper}>
+                <TouchableOpacity 
+                  style={[styles.callActionButton, styles.acceptCallButton]}
+                  onPress={handleAcceptCall}
+                >
+                  <Ionicons name="call" size={28} color="#fff" />
+                </TouchableOpacity>
+                <Text style={styles.callActionLabel}>Kabul Et</Text>
+              </View>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Arkadaşlık İsteği Alert Modal */}
+      <Modal
+        visible={friendAlertVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setFriendAlertVisible(false)}
+      >
+        <View style={styles.friendAlertOverlay}>
+          <View style={styles.friendAlertContent}>
+            <View style={[
+              styles.friendAlertIconWrapper,
+              friendAlertType === 'success' && styles.friendAlertIconSuccess,
+              friendAlertType === 'reject' && styles.friendAlertIconReject,
+              friendAlertType === 'error' && styles.friendAlertIconError,
+            ]}>
+              <Ionicons 
+                name={
+                  friendAlertType === 'success' ? 'checkmark-circle' :
+                  friendAlertType === 'reject' ? 'close-circle' : 'alert-circle'
+                } 
+                size={40} 
+                color="#fff" 
+              />
+            </View>
+            <Text style={styles.friendAlertTitle}>
+              {friendAlertType === 'success' ? 'Kabul Edildi' :
+               friendAlertType === 'reject' ? 'Reddedildi' : 'Hata'}
+            </Text>
+            <Text style={styles.friendAlertMessage}>{friendAlertMessage}</Text>
+            <TouchableOpacity 
+              style={[
+                styles.friendAlertButton,
+                friendAlertType === 'success' && styles.friendAlertButtonSuccess,
+                friendAlertType === 'reject' && styles.friendAlertButtonReject,
+                friendAlertType === 'error' && styles.friendAlertButtonError,
+              ]}
+              onPress={() => setFriendAlertVisible(false)}
+            >
+              <Text style={styles.friendAlertButtonText}>Tamam</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -694,30 +825,54 @@ const styles = StyleSheet.create({
   // Gelen arama modalı stilleri
   callModalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.85)',
+    backgroundColor: 'rgba(10,10,20,0.95)',
     justifyContent: 'center',
     alignItems: 'center',
   },
   callModal: {
-    backgroundColor: COLORS.surface,
+    backgroundColor: COLORS.background,
     borderRadius: 24,
     padding: SPACING.xxl,
     alignItems: 'center',
     width: '85%',
+    borderWidth: 1,
+    borderColor: COLORS.primary + '30',
   },
-  callTypeIcon: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: COLORS.primary + '20',
-    justifyContent: 'center',
+  callTypeBadge: {
+    flexDirection: 'row',
     alignItems: 'center',
+    backgroundColor: COLORS.primary + '30',
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.xs,
+    borderRadius: 20,
+    gap: SPACING.xs,
     marginBottom: SPACING.lg,
   },
-  callTitle: {
+  callTypeBadgeText: {
     ...FONTS.caption,
-    color: COLORS.textMuted,
-    marginBottom: SPACING.xs,
+    color: COLORS.text,
+    fontWeight: '600',
+  },
+  callerProfile: {
+    marginBottom: SPACING.lg,
+  },
+  callerPhotoWrapper: {
+    borderRadius: 60,
+    borderWidth: 3,
+    borderColor: COLORS.primary,
+    padding: 3,
+  },
+  callerAvatarCircle: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 3,
+    borderColor: COLORS.primary,
+  },
+  callerAvatarEmoji: {
+    fontSize: 48,
   },
   callerName: {
     ...FONTS.h1,
@@ -726,12 +881,20 @@ const styles = StyleSheet.create({
   },
   callSubtext: {
     ...FONTS.body,
-    color: COLORS.textMuted,
+    color: COLORS.accent,
     marginBottom: SPACING.xxl,
   },
   callActions: {
     flexDirection: 'row',
-    gap: SPACING.xxl,
+    gap: 60,
+  },
+  callActionWrapper: {
+    alignItems: 'center',
+  },
+  callActionLabel: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+    marginTop: SPACING.sm,
   },
   callActionButton: {
     width: 70,
@@ -744,7 +907,77 @@ const styles = StyleSheet.create({
     backgroundColor: '#E74C3C',
   },
   acceptCallButton: {
-    backgroundColor: '#27AE60',
+    backgroundColor: '#00B894',
+  },
+  // Arkadaşlık İsteği Alert Modal
+  friendAlertOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: SPACING.xl,
+  },
+  friendAlertContent: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 24,
+    padding: SPACING.xl,
+    alignItems: 'center',
+    width: '90%',
+    maxWidth: 320,
+    borderWidth: 1,
+    borderColor: 'rgba(125, 212, 212, 0.2)',
+  },
+  friendAlertIconWrapper: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: SPACING.lg,
+  },
+  friendAlertIconSuccess: {
+    backgroundColor: COLORS.success,
+  },
+  friendAlertIconReject: {
+    backgroundColor: COLORS.warning,
+  },
+  friendAlertIconError: {
+    backgroundColor: COLORS.error,
+  },
+  friendAlertTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: COLORS.text,
+    marginBottom: SPACING.sm,
+    textAlign: 'center',
+  },
+  friendAlertMessage: {
+    fontSize: 15,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: SPACING.xl,
+  },
+  friendAlertButton: {
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.xxl,
+    borderRadius: 16,
+    minWidth: 140,
+    alignItems: 'center',
+  },
+  friendAlertButtonSuccess: {
+    backgroundColor: COLORS.success,
+  },
+  friendAlertButtonReject: {
+    backgroundColor: COLORS.warning,
+  },
+  friendAlertButtonError: {
+    backgroundColor: COLORS.error,
+  },
+  friendAlertButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
   },
 });
 

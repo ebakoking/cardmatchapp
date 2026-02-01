@@ -117,7 +117,6 @@ router.post('/:messageId/view', authMiddleware, async (req: any, res) => {
           data: {
             viewedBy: viewerId,
             viewedAt: new Date(),
-            wasFreeView: true,
           },
         }),
       ]);
@@ -172,8 +171,6 @@ router.post('/:messageId/view', authMiddleware, async (req: any, res) => {
         data: {
           viewedBy: viewerId,
           viewedAt: new Date(),
-          viewTokenCost: cost,
-          wasFreeView: false,
         },
       }),
     ]);

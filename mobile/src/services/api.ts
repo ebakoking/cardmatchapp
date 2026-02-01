@@ -6,8 +6,13 @@ const { apiUrl } = (Constants.expoConfig?.extra || {}) as {
   apiUrl?: string;
 };
 
+// API_URL .env dosyasından okunur
+if (!apiUrl) {
+  console.error('❌ API_URL tanımlı değil! .env dosyasını kontrol edin.');
+}
+
 export const api = axios.create({
-  baseURL: apiUrl || 'http://localhost:3000',
+  baseURL: apiUrl || '',
 });
 
 // 🚨 DEBUG: /api/auth/me spam'ini tespit et
@@ -48,15 +53,32 @@ api.interceptors.request.use(async (config) => {
   return config;
 });
 
-// Hata interceptor'ı
+// Hata interceptor'ı - geliştirilmiş hata mesajları
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    // 401 hatalarını sessizce handle et (boost, media gibi endpoint'ler için)
     const status = error.response?.status;
     const url = error.config?.url || '';
     
-    // Boost ve media endpoint'leri için 401 sessiz olsun
+    // Network hatası kontrolü (İnternet yok)
+    if (!error.response && error.message === 'Network Error') {
+      console.log('🔴 API: Network error - no internet connection');
+      error.userMessage = 'İnternet bağlantısı yok. Lütfen bağlantını kontrol et.';
+    }
+    
+    // Timeout hatası
+    if (error.code === 'ECONNABORTED') {
+      console.log('🔴 API: Request timeout');
+      error.userMessage = 'Bağlantı zaman aşımına uğradı. Lütfen tekrar dene.';
+    }
+    
+    // Server hatası
+    if (status >= 500) {
+      console.log('🔴 API: Server error', status);
+      error.userMessage = 'Sunucu hatası. Lütfen daha sonra tekrar dene.';
+    }
+    
+    // 401 hatalarını sessizce handle et (boost, media gibi endpoint'ler için)
     const silentEndpoints = ['/api/boost/', '/api/media/'];
     const isSilentEndpoint = silentEndpoints.some(ep => url.includes(ep));
     

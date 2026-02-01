@@ -378,7 +378,7 @@ const CardGateScreen: React.FC<Props> = ({ route, navigation }) => {
             </View>
             <Text style={styles.waitingTitle}>Harika!</Text>
             <Text style={styles.waitingText}>
-              {partnerNickname || 'Partner'}'ın bitirmesini bekliyoruz
+              Eşleşmenin sorularını tamamlamasını bekliyoruz
             </Text>
             <View style={styles.partnerProgressContainer}>
               <Animated.View style={[styles.partnerAvatar, { transform: [{ scale: partnerPulse }] }]}>
@@ -387,7 +387,7 @@ const CardGateScreen: React.FC<Props> = ({ route, navigation }) => {
                 </Text>
               </Animated.View>
               <Text style={styles.partnerProgressText}>
-                {partnerNickname || 'Partner'}: {partnerProgress}/{total} tamamladı
+                {partnerProgress}/{total} tamamlandı
               </Text>
             </View>
             <View style={styles.loadingDots}>
@@ -531,11 +531,11 @@ const CardGateScreen: React.FC<Props> = ({ route, navigation }) => {
           })}
         </View>
 
-        {/* Partner Status */}
+        {/* Partner Status - Anonimlik için nick gösterme */}
         {partnerProgress < index + 1 && (
           <View style={styles.partnerStatus}>
             <Text style={styles.partnerStatusText}>
-              {partnerNickname || 'Partner'} sorulara cevap veriyor...
+              Sorulara cevap veriliyor...
             </Text>
           </View>
         )}

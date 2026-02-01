@@ -32,17 +32,8 @@ const MAX_DAILY_PHOTOS = 3;
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const PHOTO_SIZE = (SCREEN_WIDTH - SPACING.xl * 2 - SPACING.sm * 2) / 3;
 
-// Avatar listesi
-const AVATARS = [
-  { id: 1, emoji: '👤', color: '#6C5CE7' },
-  { id: 2, emoji: '👩', color: '#E84393' },
-  { id: 3, emoji: '🧔', color: '#00B894' },
-  { id: 4, emoji: '👩‍🦱', color: '#FDCB6E' },
-  { id: 5, emoji: '🤓', color: '#0984E3' },
-  { id: 6, emoji: '🧢', color: '#D63031' },
-  { id: 7, emoji: '🎧', color: '#00CEC9' },
-  { id: 8, emoji: '👱‍♀️', color: '#A29BFE' },
-];
+// Avatar listesi - merkezi dosyadan import
+import { AVATARS, getAvatar } from '../../constants/avatars';
 
 type Props = NativeStackScreenProps<ProfileStackParamList, 'ProfileMain'>;
 
@@ -72,7 +63,7 @@ const ProfileScreen: React.FC<Props> = ({ navigation }) => {
   // Local photo cache - fotoğrafların kaybolmasını önler
   const [cachedPhotos, setCachedPhotos] = useState<Photo[]>([]);
   
-  const currentAvatar = AVATARS.find(a => a.id === (user?.avatarId || 1)) || AVATARS[0];
+  const currentAvatar = getAvatar(user?.avatarId || 1);
 
   // Fotoğrafları cache'le - user değiştiğinde güncelle (null durumunda cache'i koru)
   React.useEffect(() => {
@@ -500,12 +491,109 @@ const ProfileScreen: React.FC<Props> = ({ navigation }) => {
           </Text>
         )}
 
-        {/* Actions */}
-        <View style={styles.actions}>
-          <TouchableOpacity style={styles.button}>
-            <Ionicons name="settings-outline" size={20} color={COLORS.text} />
-            <Text style={FONTS.button}>Ayarlar</Text>
+        {/* Hesap Ayarları */}
+        <View style={styles.settingsSection}>
+          <Text style={styles.sectionTitle}>Hesap Ayarları</Text>
+          
+          <TouchableOpacity 
+            style={styles.settingsButton}
+            onPress={() => navigation.navigate('ChangeNickname')}
+          >
+            <Ionicons name="person-outline" size={20} color={COLORS.textSecondary} />
+            <Text style={styles.settingsButtonText}>Kullanıcı Adını Değiştir</Text>
+            <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
           </TouchableOpacity>
+          
+          <TouchableOpacity 
+            style={styles.settingsButton}
+            onPress={() => navigation.navigate('ChangeEmail')}
+          >
+            <Ionicons name="mail-outline" size={20} color={COLORS.textSecondary} />
+            <Text style={styles.settingsButtonText}>E-posta Değiştir</Text>
+            <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+          </TouchableOpacity>
+          
+          <TouchableOpacity 
+            style={styles.settingsButton}
+            onPress={() => navigation.navigate('ChangePassword')}
+          >
+            <Ionicons name="lock-closed-outline" size={20} color={COLORS.textSecondary} />
+            <Text style={styles.settingsButtonText}>Şifre Değiştir</Text>
+            <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Gizlilik & Güvenlik */}
+        <View style={styles.settingsSection}>
+          <Text style={styles.sectionTitle}>Gizlilik & Güvenlik</Text>
+          
+          <TouchableOpacity 
+            style={styles.settingsButton}
+            onPress={() => navigation.navigate('BlockedUsers')}
+          >
+            <Ionicons name="ban-outline" size={20} color={COLORS.textSecondary} />
+            <Text style={styles.settingsButtonText}>Engellenen Kullanıcılar</Text>
+            <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+          </TouchableOpacity>
+          
+          <TouchableOpacity 
+            style={styles.settingsButton}
+            onPress={() => navigation.navigate('AppLock')}
+          >
+            <Ionicons name="finger-print-outline" size={20} color={COLORS.textSecondary} />
+            <Text style={styles.settingsButtonText}>Uygulama Kilidi</Text>
+            <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Destek */}
+        <View style={styles.settingsSection}>
+          <Text style={styles.sectionTitle}>Destek</Text>
+          
+          <TouchableOpacity 
+            style={styles.settingsButton}
+            onPress={() => navigation.navigate('Help')}
+          >
+            <Ionicons name="help-circle-outline" size={20} color={COLORS.textSecondary} />
+            <Text style={styles.settingsButtonText}>Yardım</Text>
+            <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+          </TouchableOpacity>
+          
+          <TouchableOpacity 
+            style={styles.settingsButton}
+            onPress={() => navigation.navigate('Feedback')}
+          >
+            <Ionicons name="chatbubble-ellipses-outline" size={20} color={COLORS.textSecondary} />
+            <Text style={styles.settingsButtonText}>Görüş / Öneri Gönder</Text>
+            <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Yasal */}
+        <View style={styles.settingsSection}>
+          <Text style={styles.sectionTitle}>Yasal</Text>
+          
+          <TouchableOpacity 
+            style={styles.settingsButton}
+            onPress={() => navigation.navigate('PrivacyPolicy')}
+          >
+            <Ionicons name="shield-checkmark-outline" size={20} color={COLORS.textSecondary} />
+            <Text style={styles.settingsButtonText}>Gizlilik Politikası</Text>
+            <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+          </TouchableOpacity>
+          
+          <TouchableOpacity 
+            style={styles.settingsButton}
+            onPress={() => navigation.navigate('TermsOfService')}
+          >
+            <Ionicons name="document-text-outline" size={20} color={COLORS.textSecondary} />
+            <Text style={styles.settingsButtonText}>Kullanım Koşulları</Text>
+            <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Çıkış */}
+        <View style={styles.actions}>
           <TouchableOpacity style={[styles.button, styles.logoutButton]} onPress={handleLogout}>
             <Ionicons name="log-out-outline" size={20} color={COLORS.danger} />
             <Text style={[FONTS.button, { color: COLORS.danger }]}>Çıkış Yap</Text>
@@ -895,6 +983,38 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
     borderWidth: 1,
     borderColor: COLORS.danger,
+  },
+  // Settings Section
+  settingsSection: {
+    marginTop: SPACING.lg,
+    marginHorizontal: SPACING.lg,
+    backgroundColor: COLORS.surface,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  sectionTitle: {
+    ...FONTS.caption,
+    color: COLORS.textMuted,
+    fontWeight: '600',
+    paddingHorizontal: SPACING.md,
+    paddingTop: SPACING.md,
+    paddingBottom: SPACING.xs,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  settingsButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.md,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  settingsButtonText: {
+    flex: 1,
+    marginLeft: SPACING.md,
+    fontSize: 15,
+    color: COLORS.text,
   },
   freezeButton: {
     flexDirection: 'row',

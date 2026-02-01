@@ -66,16 +66,8 @@ interface FriendProfile {
 type TabType = 'core' | 'daily';
 
 // Avatar listesi
-const AVATARS = [
-  { id: 1, emoji: '👤', color: '#6C5CE7' },
-  { id: 2, emoji: '👩', color: '#E84393' },
-  { id: 3, emoji: '🧔', color: '#00B894' },
-  { id: 4, emoji: '👩‍🦱', color: '#FDCB6E' },
-  { id: 5, emoji: '🤓', color: '#0984E3' },
-  { id: 6, emoji: '🧢', color: '#D63031' },
-  { id: 7, emoji: '🎧', color: '#00CEC9' },
-  { id: 8, emoji: '👱‍♀️', color: '#A29BFE' },
-];
+// Avatar listesi - merkezi dosyadan import
+import { AVATARS, getAvatar } from '../../constants/avatars';
 
 const FriendProfileScreen: React.FC<Props> = ({ route, navigation }) => {
   const { friendId, friendNickname } = route.params || {};
@@ -215,9 +207,7 @@ const FriendProfileScreen: React.FC<Props> = ({ route, navigation }) => {
     });
   };
 
-  const getAvatar = (avatarId?: number) => {
-    return AVATARS.find(a => a.id === avatarId) || AVATARS[0];
-  };
+  // getAvatar artık merkezi dosyadan import ediliyor
 
   if (loading) {
     return (

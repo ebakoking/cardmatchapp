@@ -10,7 +10,10 @@ let joinedUserId: string | null = null;
 
 export function getSocket() {
   if (!socket) {
-    socket = io(socketUrl || 'ws://localhost:3000', {
+    if (!socketUrl) {
+      console.error('❌ SOCKET_URL tanımlı değil! .env dosyasını kontrol edin.');
+    }
+    socket = io(socketUrl || '', {
       transports: ['websocket'],
     });
   }

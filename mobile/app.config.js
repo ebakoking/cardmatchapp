@@ -1,5 +1,13 @@
 // app.config.js - Environment variables support
-// .env dosyasından veya environment'tan değerleri okur
+// .env dosyasından değerleri okur
+//
+// ÖNEMLİ: Sunucu adresini değiştirmek için sadece .env dosyasını düzenleyin!
+// Bu dosyaya dokunmanıza gerek yok.
+
+// .env kontrolü - eğer API_URL yoksa uyarı ver
+if (!process.env.API_URL) {
+  console.warn('⚠️ API_URL tanımlı değil! .env dosyasını kontrol edin.');
+}
 
 export default {
   expo: {
@@ -45,15 +53,16 @@ export default {
       'expo-apple-authentication',
     ],
     extra: {
-      // API URLs
-      apiUrl: process.env.API_URL || 'http://192.168.1.3:3000',
-      socketUrl: process.env.SOCKET_URL || 'ws://192.168.1.3:3000',
+      // ============================================================
+      // SUNUCU ADRESI (.env dosyasından okunur)
+      // ============================================================
+      apiUrl: process.env.API_URL,
+      socketUrl: process.env.SOCKET_URL,
       
       // RevenueCat
       revenuecatPublicKey: process.env.REVENUECAT_PUBLIC_KEY || '',
       
       // Google OAuth Client IDs
-      // Google Cloud Console'dan alınacak değerler
       googleExpoClientId: process.env.GOOGLE_EXPO_CLIENT_ID || '',
       googleIosClientId: process.env.GOOGLE_IOS_CLIENT_ID || '',
       googleAndroidClientId: process.env.GOOGLE_ANDROID_CLIENT_ID || '',

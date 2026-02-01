@@ -401,31 +401,66 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
 
   // Adım 2: Doğum Tarihi + Burç
   const renderStep2 = () => {
-    // Gün input handler - 2 karakter girilince Ay'a geç
+    // Gün input handler - 1-31 arası, 2 karakter girilince Ay'a geç
     const handleDayChange = (v: string) => {
-      const cleaned = v.replace(/[^0-9]/g, '').slice(0, 2);
+      let cleaned = v.replace(/[^0-9]/g, '').slice(0, 2);
+      
+      // Değer kontrolü: 1-31 arası
+      if (cleaned.length === 2) {
+        const num = parseInt(cleaned);
+        if (num > 31) cleaned = '31';
+        if (num < 1) cleaned = '01';
+      }
+      // İlk karakter 4-9 ise otomatik 0 ekle
+      if (cleaned.length === 1 && parseInt(cleaned) > 3) {
+        cleaned = '0' + cleaned;
+      }
+      
       setBirthDay(cleaned);
       if (cleaned.length === 2) {
         monthInputRef.current?.focus();
       }
     };
 
-    // Ay input handler - 2 karakter girilince Yıl'a geç
+    // Ay input handler - 1-12 arası, 2 karakter girilince Yıl'a geç
     const handleMonthChange = (v: string) => {
-      const cleaned = v.replace(/[^0-9]/g, '').slice(0, 2);
+      let cleaned = v.replace(/[^0-9]/g, '').slice(0, 2);
+      
+      // Değer kontrolü: 1-12 arası
+      if (cleaned.length === 2) {
+        const num = parseInt(cleaned);
+        if (num > 12) cleaned = '12';
+        if (num < 1) cleaned = '01';
+      }
+      // İlk karakter 2-9 ise otomatik 0 ekle
+      if (cleaned.length === 1 && parseInt(cleaned) > 1) {
+        cleaned = '0' + cleaned;
+      }
+      
       setBirthMonth(cleaned);
       if (cleaned.length === 2) {
         yearInputRef.current?.focus();
       }
     };
 
-    // Yıl input handler - 4 karakter girilince klavyeyi kapat
+    // Yıl input handler - Mantıklı aralıkta (1920-2008), 4 karakter girilince klavyeyi kapat
     const handleYearChange = (v: string) => {
-      const cleaned = v.replace(/[^0-9]/g, '').slice(0, 4);
-      setBirthYear(cleaned);
+      let cleaned = v.replace(/[^0-9]/g, '').slice(0, 4);
+      
+      // 4 karakter girildiğinde yıl kontrolü
       if (cleaned.length === 4) {
+        const num = parseInt(cleaned);
+        const currentYear = new Date().getFullYear();
+        const minYear = currentYear - 100; // 100 yaşından büyük olamaz
+        const maxYear = currentYear - 18;   // 18 yaşından küçük olamaz
+        
+        if (num > maxYear) cleaned = maxYear.toString();
+        if (num < minYear) cleaned = minYear.toString();
+        
         setTimeout(dismissKeyboard, 100);
       }
+      
+      setBirthYear(cleaned);
     };
 
     // Backspace handler - boş ise önceki input'a geç

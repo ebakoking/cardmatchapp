@@ -10,6 +10,8 @@ import {
   verifyAccessToken,
 } from '../utils/jwt';
 import { prisma } from '../prisma';
+import { sendOtpSms } from '../services/sms';
+import { sendVerificationEmail, sendWelcomeEmail } from '../services/email';
 
 // Google OAuth Client (token doğrulama için)
 // Client ID'ler .env'den alınacak - production'da doldurulmalı
@@ -120,19 +122,31 @@ router.post('/request-otp', validateBody(requestOtpSchema), async (req, res) => 
   const { phoneNumber } = req.body as z.infer<typeof requestOtpSchema>;
 
   const code = Math.floor(100000 + Math.random() * 900000).toString();
-  const expiresAt = Date.now() + 5 * 60 * 1000; // 5 dakika
+  const expiresAt = Date.now() + 60 * 1000; // 1 dakika (mobil ile senkron)
 
   otpStore.set(phoneNumber, { code, expiresAt });
 
-  // TODO: Gerçek SMS servisi entegrasyonu (Twilio, AWS SNS, vb.)
-  // Şimdilik sadece konsola yazdır
-  console.log(`[Auth] OTP for ${phoneNumber}: ${code}`);
+  // SMS gönder (development'ta sadece log, production'da Netgsm)
+  const smsResult = await sendOtpSms(phoneNumber, code);
+  
+  // Test modu: SMS servisi yoksa bile devam et
+  const isTestMode = process.env.ENABLE_TEST_OTP === 'true' || !process.env.NETGSM_USERCODE;
+  
+  if (!smsResult.success && !isTestMode) {
+    console.error(`[Auth] SMS failed for ${phoneNumber}:`, smsResult.error);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'SMS_FAILED', message: 'SMS gönderilemedi. Lütfen tekrar deneyin.' },
+    });
+  }
+
+  console.log(`[Auth] OTP for ${phoneNumber}: ${code}${isTestMode ? ' (TEST MODE)' : ''}`);
 
   return res.json({ 
     success: true,
-    message: 'OTP gönderildi.',
-    // Development'ta OTP'yi döndür (production'da kaldırılmalı)
-    ...(process.env.NODE_ENV !== 'production' && { debugOtp: code }),
+    message: isTestMode ? 'Test modu: OTP aşağıda gösterildi.' : 'OTP gönderildi.',
+    // Test modunda OTP'yi döndür
+    ...(isTestMode && { testOtp: code }),
   });
 });
 

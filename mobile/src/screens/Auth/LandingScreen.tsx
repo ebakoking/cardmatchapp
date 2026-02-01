@@ -26,6 +26,8 @@ type AuthStackParamList = {
   PhoneVerification: undefined;
   EmailAuth: undefined;
   ProfileSetup: undefined;
+  PrivacyPolicy: undefined;
+  TermsOfService: undefined;
 };
 
 type Props = NativeStackScreenProps<AuthStackParamList, 'Landing'>;
@@ -282,13 +284,16 @@ const LandingScreen: React.FC<Props> = ({ navigation }) => {
 
         {/* ========== FOOTER ========== */}
         <View style={styles.footer}>
-          <Text style={styles.footerText}>
-            Devam ederek{' '}
-            <Text style={styles.footerLink}>Kullanım Koşulları</Text>
-            {' '}ve{' '}
-            <Text style={styles.footerLink}>Gizlilik Politikası</Text>
-            'nı kabul edersin.
-          </Text>
+          <Text style={styles.footerText}>Devam ederek şunları kabul edersin:</Text>
+          <View style={styles.footerLinks}>
+            <TouchableOpacity onPress={() => navigation.navigate('TermsOfService')}>
+              <Text style={styles.footerLink}>Kullanım Koşulları</Text>
+            </TouchableOpacity>
+            <Text style={styles.footerSeparator}>•</Text>
+            <TouchableOpacity onPress={() => navigation.navigate('PrivacyPolicy')}>
+              <Text style={styles.footerLink}>Gizlilik Politikası</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </SafeAreaView>
     </LinearGradient>
@@ -462,15 +467,26 @@ const styles = StyleSheet.create({
   footer: {
     paddingVertical: 16,
     alignItems: 'center',
+    gap: 8,
   },
   footerText: {
     fontSize: 11,
     color: COLORS.textMuted,
     textAlign: 'center',
-    lineHeight: 16,
+  },
+  footerLinks: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   footerLink: {
+    fontSize: 12,
     color: COLORS.accent,
+    textDecorationLine: 'underline',
+  },
+  footerSeparator: {
+    fontSize: 10,
+    color: COLORS.textMuted,
   },
 });
 

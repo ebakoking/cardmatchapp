@@ -175,6 +175,7 @@ model User {
   status                 UserStatus    @default(ACTIVE)
   reportCount            Int           @default(0)
   positiveRatings        Int           @default(0)  // İyi kullanıcı beğeni sayısı
+  negativeRatings        Int           @default(0)  // Beğenilmeyen kullanıcı sayısı
   isOnline               Boolean       @default(false)
   lastSeenAt             DateTime?
   expoPushToken          String?
@@ -449,6 +450,23 @@ model Message {
   @@index([senderId])
 }
 
+// Medya sayaç tablosu - "ilk ücretsiz" mantığı için
+// Mesaj silindikten sonra bile sayaç korunur
+model MediaCounter {
+  id            String   @id @default(uuid())
+  chatSessionId String
+  senderId      String
+  receiverId    String
+  mediaType     String   // 'photo' | 'video' | 'audio'
+  count         Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([chatSessionId, senderId, mediaType])
+  @@index([chatSessionId])
+  @@index([senderId])
+}
+
 model Block {
   id             String   @id @default(uuid())
   blockerUserId  String
@@ -557,6 +575,22 @@ model FriendChatMessage {
   friendChat   FriendChat  @relation(fields: [friendChatId], references: [id], onDelete: Cascade)
   sender       User        @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
 
+  @@index([friendChatId])
+  @@index([senderId])
+}
+
+// Arkadaş sohbeti medya sayaç tablosu
+model FriendMediaCounter {
+  id           String   @id @default(uuid())
+  friendChatId String
+  senderId     String
+  receiverId   String
+  mediaType    String   // 'photo' | 'video' | 'audio'
+  count        Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([friendChatId, senderId, mediaType])
   @@index([friendChatId])
   @@index([senderId])
 }

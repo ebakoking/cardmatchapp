@@ -45,7 +45,7 @@ const ELMAS_COSTS = {
  */
 router.post('/:messageId/unlock', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const { messageId } = req.params;
+    const messageId = req.params.messageId as string;
     const userId = req.user!.id;
 
     console.log('[Media] Unlock request:', { messageId, userId });
@@ -144,12 +144,10 @@ router.post('/:messageId/unlock', authMiddleware, async (req: AuthRequest, res: 
       }),
       // Mesajı görüntülendi olarak işaretle
       prisma.message.update({
-        where: { id: messageId },
+        where: { id: messageId as string },
         data: {
           viewedBy: userId,
           viewedAt: new Date(),
-          viewTokenCost: cost,
-          wasFreeView: false,
         },
       }),
       // SparkTransaction kaydet
@@ -221,13 +219,13 @@ router.post('/:messageId/unlock', authMiddleware, async (req: AuthRequest, res: 
  */
 router.get('/:messageId/status', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const { messageId } = req.params;
+    const messageId = req.params.messageId as string;
     const userId = req.user!.id;
 
     const message = await prisma.message.findUnique({
       where: { id: messageId },
       include: { chatSession: true },
-    });
+    }) as any;
 
     if (!message) {
       return res.status(404).json({
@@ -259,7 +257,7 @@ router.get('/:messageId/status', authMiddleware, async (req: AuthRequest, res: R
         isFreeAvailable,
         cost: isFreeAvailable ? 0 : cost,
         viewedAt: message.viewedAt,
-        wasFreeView: message.wasFreeView,
+        wasFreeView: message.isFirstFree || false,
       },
     });
 
@@ -278,7 +276,7 @@ router.get('/:messageId/status', authMiddleware, async (req: AuthRequest, res: R
  */
 router.post('/friend/:messageId/unlock', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
-    const { messageId } = req.params;
+    const messageId = req.params.messageId as string;
     const userId = req.user!.id;
 
     console.log('[Media] Friend unlock request:', { messageId, userId });

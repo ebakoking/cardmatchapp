@@ -1,0 +1,45 @@
+# ============================================================
+# GITHUB'A YÜKLENMEYECEK DOSYALAR
+# ============================================================
+
+# Bağımlılıklar
+node_modules/
+
+# Environment değişkenleri (ŞİFRELER VAR!)
+.env
+.env.local
+.env.production
+.env.*.local
+
+# Veritabanı
+*.db
+*.sqlite
+prisma/*.db
+
+# Loglar
+logs/
+*.log
+npm-debug.log*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+build/
+
+# Uploads (kullanıcı dosyaları)
+uploads/
+
+# Test
+coverage/
+
+# Prisma
+prisma/migrations/*.sql.backup

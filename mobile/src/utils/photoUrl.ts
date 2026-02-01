@@ -1,7 +1,7 @@
 import Constants from 'expo-constants';
 
-// API base URL for photo URLs
-const API_BASE_URL = (Constants.expoConfig?.extra as any)?.apiUrl || 'http://192.168.1.3:3000';
+// API base URL for photo URLs (.env dosyasından okunur)
+const API_BASE_URL = (Constants.expoConfig?.extra as any)?.apiUrl || '';
 
 /**
  * Convert relative photo URL to full URL

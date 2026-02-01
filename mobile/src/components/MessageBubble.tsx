@@ -110,7 +110,7 @@ const MessageBubble: React.FC<Props> = ({
     );
   };
 
-  // TOKEN_GIFT mesajı render
+  // TOKEN_GIFT mesajı render - Küçük ve anonim
   const renderTokenGiftMessage = () => {
     const amount = message.tokenAmount || 0;
     
@@ -121,29 +121,15 @@ const MessageBubble: React.FC<Props> = ({
           { opacity: opacityAnim, transform: [{ scale: scaleAnim }] }
         ]}
       >
-        <LinearGradient
-          colors={['#FFD700', '#FFA500']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.giftBubble}
-        >
-          <View style={styles.giftIconContainer}>
-            <Ionicons name="diamond" size={28} color="#1a1a1a" />
-          </View>
-          <View style={styles.giftContent}>
-            <Text style={styles.giftAmount}>{amount}</Text>
-            <Text style={styles.giftLabel}>
-              {isMine ? 'Elmas Gönderildi' : 'Elmas Alındı'}
-            </Text>
-          </View>
-          {!isMine && (
-            <View style={styles.giftSenderBadge}>
-              <Text style={styles.giftSenderText}>
-                {message.senderNickname || 'Birisi'}
-              </Text>
-            </View>
-          )}
-        </LinearGradient>
+        <View style={styles.giftBubbleSmall}>
+          <Ionicons name="diamond" size={16} color={COLORS.accent} />
+          <Text style={styles.giftAmountSmall}>
+            {isMine ? `-${amount}` : `+${amount}`}
+          </Text>
+          <Text style={styles.giftLabelSmall}>
+            {isMine ? 'gönderildi' : 'alındı'}
+          </Text>
+        </View>
         {message.createdAt && (
           <Text style={styles.giftTimestamp}>{formatTimestamp(message.createdAt)}</Text>
         )}
@@ -156,7 +142,7 @@ const MessageBubble: React.FC<Props> = ({
 
   const renderContent = () => {
     // VIDEO
-    if (message.mediaUrl && message.mediaType === 'video') {
+    if (message.mediaUrl && message.mediaUrl.length > 0 && message.mediaType === 'video') {
       // showViewed = zaten görüntülendi (ephemeral - tekrar izlenemez)
       const showViewed = !isMine && message.isViewed;
       // showLock = kilitli (ödeme gerekli)
@@ -225,7 +211,7 @@ const MessageBubble: React.FC<Props> = ({
     }
     
     // PHOTO
-    if (message.mediaUrl && (message.mediaType === 'photo' || !message.mediaType)) {
+    if (message.mediaUrl && message.mediaUrl.length > 0 && (message.mediaType === 'photo' || !message.mediaType)) {
       // showViewed = zaten görüntülendi (ephemeral - tekrar izlenemez)
       const showViewed = !isMine && message.isViewed;
       // showLock = kilitli (ödeme gerekli)
@@ -299,7 +285,7 @@ const MessageBubble: React.FC<Props> = ({
     }
     
     // AUDIO
-    if (message.mediaType === 'audio' && message.mediaUrl) {
+    if (message.mediaType === 'audio' && message.mediaUrl && message.mediaUrl.length > 0) {
       const isFirstAudio = photoIndex === 0;
       const audioLocked = !isMine && !isFirstAudio && !isUnlocked;
       const allowMultiple = isUnlocked;
@@ -413,8 +399,10 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: 6,
   },
   bubbleOther: {
-    backgroundColor: COLORS.surface,
+    backgroundColor: '#2a3a4a', // Koyu mavi-gri, daha canlı
     borderBottomLeftRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(125, 212, 212, 0.15)', // Hafif turkuaz kenar
   },
   bubbleMedia: {
     padding: SPACING.xs,
@@ -462,59 +450,30 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: COLORS.accent,
   },
-  // TOKEN_GIFT mesajı
+  // TOKEN_GIFT mesajı - Küçük ve anonim
   giftContainer: {
     alignItems: 'center',
-    marginVertical: SPACING.sm,
+    marginVertical: SPACING.xs,
   },
-  giftBubble: {
+  giftBubbleSmall: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 20,
-    paddingHorizontal: SPACING.lg,
-    paddingVertical: SPACING.md,
-    minWidth: 180,
-    shadowColor: '#FFD700',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
+    backgroundColor: 'rgba(125, 212, 212, 0.12)',
+    borderRadius: 16,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(125, 212, 212, 0.25)',
   },
-  giftIconContainer: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: SPACING.sm,
+  giftAmountSmall: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.accent,
   },
-  giftContent: {
-    flex: 1,
-  },
-  giftAmount: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#1a1a1a',
-  },
-  giftLabel: {
+  giftLabelSmall: {
     fontSize: 12,
-    color: '#333',
-    fontWeight: '500',
-  },
-  giftSenderBadge: {
-    position: 'absolute',
-    top: -8,
-    right: 12,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 10,
-  },
-  giftSenderText: {
-    fontSize: 10,
-    color: COLORS.text,
-    fontWeight: '500',
+    color: COLORS.textMuted,
   },
   giftTimestamp: {
     fontSize: 10,

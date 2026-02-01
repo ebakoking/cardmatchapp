@@ -9,6 +9,10 @@ import { validateBody } from '../utils/validation';
 import { verifyJwt } from '../utils/jwt';
 import { saveVerificationVideo } from '../services/verification';
 import { emitToUser } from '../socket/io';
+import { sendVerificationEmail } from '../services/email';
+
+// Geçici email doğrulama kodları (production'da Redis kullanılmalı)
+const emailVerificationCodes: Map<string, { code: string; newEmail: string; expiresAt: Date }> = new Map();
 
 const router = Router();
 
@@ -83,6 +87,44 @@ const updateProfileSchema = z.object({
   birthDate: z.string().optional(),
   latitude: z.number().optional(),
   longitude: z.number().optional(),
+});
+
+// ============ KULLANICI ADI MÜSAİTLİK KONTROLÜ ============
+router.get('/check-nickname', authMiddleware, async (req: any, res) => {
+  try {
+    const { nickname } = req.query;
+    const currentUserId = req.user.userId;
+    
+    if (!nickname || typeof nickname !== 'string') {
+      return res.json({ available: false, message: 'Kullanıcı adı gerekli.' });
+    }
+    
+    // Türkçe karakter kontrolü
+    if (/[çğıöşüÇĞİÖŞÜ]/.test(nickname)) {
+      return res.json({ available: false, message: 'Türkçe karakter kullanılamaz.' });
+    }
+    
+    // Minimum uzunluk
+    if (nickname.length < 3) {
+      return res.json({ available: false, message: 'En az 3 karakter gerekli.' });
+    }
+    
+    // Mevcut kullanıcı adı kontrolü
+    const existing = await prisma.user.findFirst({
+      where: {
+        nickname: { equals: nickname, mode: 'insensitive' },
+        id: { not: currentUserId },
+      },
+    });
+    
+    return res.json({
+      available: !existing,
+      message: existing ? 'Bu kullanıcı adı zaten alınmış.' : 'Kullanılabilir.',
+    });
+  } catch (error) {
+    console.error('[CheckNickname] Error:', error);
+    return res.json({ available: false, message: 'Kontrol edilemedi.' });
+  }
 });
 
 router.get('/me', authMiddleware, async (req: any, res) => {
@@ -649,10 +691,10 @@ router.get('/friends', authMiddleware, async (req: any, res) => {
       }
     }
 
-    // Prime kullanıcılar için profilePhotoUrl öncelikli, yoksa ilk fotoğraf
+    // SADECE Prime kullanıcılar için profilePhotoUrl kullan, yoksa null (avatar gösterilir)
     const profilePhoto = friend.isPrime && friend.profilePhotoUrl 
       ? friend.profilePhotoUrl 
-      : friend.profilePhotos[0]?.url || null;
+      : null;
 
     friendsMap.set(friend.id, {
       friendshipId: f.id,
@@ -715,9 +757,10 @@ router.get('/friend-requests', authMiddleware, async (req: any, res) => {
     fromUserId: r.fromUserId,
     nickname: r.fromUser.nickname,
     avatarId: r.fromUser.avatarId,
+    // SADECE Prime kullanıcılar için profilePhotoUrl kullan
     profilePhoto: r.fromUser.isPrime && r.fromUser.profilePhotoUrl 
       ? r.fromUser.profilePhotoUrl 
-      : r.fromUser.profilePhotos[0]?.url || null,
+      : null,
     isPrime: r.fromUser.isPrime,
     createdAt: r.createdAt,
   }));
@@ -1354,6 +1397,12 @@ router.post('/photos/:photoId/unlock', authMiddleware, async (req: any, res) => 
       select: { monthlySparksEarned: true, totalSparksEarned: true },
     });
 
+    // Güncel bakiyeyi al (önce al, sonra emit et)
+    const updatedViewer = await prisma.user.findUnique({
+      where: { id: viewerId },
+      select: { tokenBalance: true },
+    });
+
     // Fotoğraf sahibine real-time spark bildirimi gönder
     emitToUser(ownerId, 'spark:earned', {
       amount: sparkAmount,
@@ -1363,11 +1412,13 @@ router.post('/photos/:photoId/unlock', authMiddleware, async (req: any, res) => 
       photoId,
       fromUserId: viewerId,
     });
-
-    // Güncel bakiyeyi al
-    const updatedViewer = await prisma.user.findUnique({
-      where: { id: viewerId },
-      select: { tokenBalance: true },
+    
+    // 🔔 Görüntüleyene token:spent bildirimi gönder (anlık güncelleme için)
+    emitToUser(viewerId, 'token:spent', {
+      amount: unlockCost,
+      newBalance: updatedViewer?.tokenBalance || 0,
+      reason: 'photo_unlock',
+      photoId,
     });
 
     const responseData: any = {
@@ -1508,6 +1559,333 @@ router.post('/me/reactivate-account', authMiddleware, async (req: any, res) => {
     });
   } catch (error) {
     console.error('[Account] Reactivate error:', error);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: 'Bir hata oluştu.' },
+    });
+  }
+});
+
+// ============ E-POSTA DEĞİŞTİRME - DOĞRULAMA KODU GÖNDER ============
+router.post('/me/email/request-change', authMiddleware, async (req: any, res) => {
+  try {
+    const userId = req.user.userId;
+    const { newEmail } = req.body;
+    
+    if (!newEmail || !newEmail.includes('@')) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_EMAIL', message: 'Geçerli bir e-posta adresi girin.' },
+      });
+    }
+    
+    // E-posta zaten kullanılıyor mu?
+    const existingUser = await prisma.user.findFirst({
+      where: { email: newEmail, id: { not: userId } },
+    });
+    
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'EMAIL_IN_USE', message: 'Bu e-posta adresi zaten kullanılıyor.' },
+      });
+    }
+    
+    // 6 haneli doğrulama kodu oluştur
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 dakika
+    
+    // Kodu kaydet
+    emailVerificationCodes.set(userId, { code, newEmail, expiresAt });
+    
+    // E-posta gönder
+    const result = await sendVerificationEmail(newEmail, code);
+    
+    if (!result.success) {
+      return res.status(500).json({
+        success: false,
+        error: { code: 'EMAIL_SEND_FAILED', message: 'E-posta gönderilemedi.' },
+      });
+    }
+    
+    console.log(`[Email] Verification code sent to ${newEmail} for user ${userId}`);
+    
+    return res.json({
+      success: true,
+      message: 'Doğrulama kodu e-posta adresine gönderildi.',
+      // Development'ta kodu döndür (test için)
+      ...(process.env.NODE_ENV !== 'production' && { testCode: code }),
+    });
+  } catch (error) {
+    console.error('[Email] Request change error:', error);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: 'Bir hata oluştu.' },
+    });
+  }
+});
+
+// ============ E-POSTA DEĞİŞTİRME - DOĞRULAMA ============
+router.post('/me/email/verify', authMiddleware, async (req: any, res) => {
+  try {
+    const userId = req.user.userId;
+    const { code } = req.body;
+    
+    const pending = emailVerificationCodes.get(userId);
+    
+    if (!pending) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'NO_PENDING_CHANGE', message: 'Bekleyen e-posta değişikliği bulunamadı.' },
+      });
+    }
+    
+    if (new Date() > pending.expiresAt) {
+      emailVerificationCodes.delete(userId);
+      return res.status(400).json({
+        success: false,
+        error: { code: 'CODE_EXPIRED', message: 'Doğrulama kodunun süresi doldu. Yeniden deneyin.' },
+      });
+    }
+    
+    if (pending.code !== code) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_CODE', message: 'Geçersiz doğrulama kodu.' },
+      });
+    }
+    
+    // E-postayı güncelle
+    await prisma.user.update({
+      where: { id: userId },
+      data: { email: pending.newEmail },
+    });
+    
+    // Kodu temizle
+    emailVerificationCodes.delete(userId);
+    
+    console.log(`[Email] Email changed for user ${userId} to ${pending.newEmail}`);
+    
+    return res.json({
+      success: true,
+      message: 'E-posta adresin başarıyla güncellendi.',
+      newEmail: pending.newEmail,
+    });
+  } catch (error) {
+    console.error('[Email] Verify error:', error);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: 'Bir hata oluştu.' },
+    });
+  }
+});
+
+// ============ ŞİFRE DEĞİŞTİR ============
+router.put('/me/password', authMiddleware, async (req: any, res) => {
+  try {
+    const userId = req.user.userId;
+    const { currentPassword, newPassword } = req.body;
+    
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_PASSWORD', message: 'Şifre en az 6 karakter olmalı.' },
+      });
+    }
+    
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'USER_NOT_FOUND', message: 'Kullanıcı bulunamadı.' },
+      });
+    }
+    
+    // Mevcut şifre kontrolü (eğer şifre varsa)
+    if (user.passwordHash && currentPassword) {
+      const bcrypt = require('bcryptjs');
+      const isMatch = await bcrypt.compare(currentPassword, user.passwordHash);
+      if (!isMatch) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'WRONG_PASSWORD', message: 'Mevcut şifre yanlış.' },
+        });
+      }
+    }
+    
+    const bcrypt = require('bcryptjs');
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    await prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash: hashedPassword },
+    });
+    
+    return res.json({ success: true, message: 'Şifre güncellendi.' });
+  } catch (error) {
+    console.error('[Password] Update error:', error);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: 'Bir hata oluştu.' },
+    });
+  }
+});
+
+// ============ ENGELLİ KULLANICILAR LİSTESİ ============
+router.get('/blocked', authMiddleware, async (req: any, res) => {
+  try {
+    const userId = req.user.userId;
+    
+    const blocks = await prisma.block.findMany({
+      where: { blockerUserId: userId },
+      include: {
+        blocked: {
+          select: { id: true, nickname: true, avatarId: true },
+        },
+      },
+    });
+    
+    const blockedUsers = blocks.map((b: any) => ({
+      id: b.blocked.id,
+      nickname: b.blocked.nickname,
+      avatarId: b.blocked.avatarId,
+    }));
+    
+    return res.json({ success: true, data: blockedUsers });
+  } catch (error) {
+    console.error('[Block] List error:', error);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: 'Bir hata oluştu.' },
+    });
+  }
+});
+
+// ============ KULLANICI ENGELLE ============
+router.post('/block', authMiddleware, async (req: any, res) => {
+  try {
+    const blockerId = req.user.userId;
+    const { blockedId } = req.body;
+    
+    if (!blockedId) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'MISSING_ID', message: 'Engellenecek kullanıcı ID gerekli.' },
+      });
+    }
+    
+    // Zaten engellenmiş mi kontrol et
+    const existing = await prisma.block.findFirst({
+      where: { blockerUserId: blockerId, blockedUserId: blockedId },
+    });
+    
+    if (existing) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'ALREADY_BLOCKED', message: 'Bu kullanıcı zaten engelli.' },
+      });
+    }
+    
+    await prisma.block.create({
+      data: { blockerUserId: blockerId, blockedUserId: blockedId },
+    });
+    
+    console.log(`[Block] User ${blockerId} blocked ${blockedId}`);
+    
+    return res.json({ success: true, message: 'Kullanıcı engellendi.' });
+  } catch (error) {
+    console.error('[Block] Create error:', error);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: 'Bir hata oluştu.' },
+    });
+  }
+});
+
+// ============ ENGEL KALDIR ============
+router.delete('/block/:userId', authMiddleware, async (req: any, res) => {
+  try {
+    const blockerId = req.user.userId;
+    const blockedId = req.params.userId;
+    
+    await prisma.block.deleteMany({
+      where: { blockerUserId: blockerId, blockedUserId: blockedId },
+    });
+    
+    return res.json({ success: true, message: 'Engel kaldırıldı.' });
+  } catch (error) {
+    console.error('[Block] Remove error:', error);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: 'Bir hata oluştu.' },
+    });
+  }
+});
+
+// ============ TÜM KONUŞMALARI SİL ============
+router.delete('/conversations', authMiddleware, async (req: any, res) => {
+  try {
+    const userId = req.user.userId;
+    
+    // Friend chat'leri bul (Friendship üzerinden)
+    const friendChats = await prisma.friendChat.findMany({
+      where: {
+        friendship: {
+          OR: [{ user1Id: userId }, { user2Id: userId }],
+        },
+      },
+      select: { id: true },
+    });
+    const friendChatIds = friendChats.map((fc: any) => fc.id);
+    
+    // Friend chat mesajlarını sil
+    if (friendChatIds.length > 0) {
+      await prisma.friendChatMessage.deleteMany({
+        where: {
+          friendChatId: { in: friendChatIds },
+        },
+      });
+    }
+    
+    // Match mesajlarını sil (Message tablosu kullanılıyor)
+    await prisma.message.deleteMany({
+      where: { senderId: userId },
+    });
+    
+    return res.json({ success: true, message: 'Tüm konuşmalar silindi.' });
+  } catch (error) {
+    console.error('[Conversations] Delete error:', error);
+    return res.status(500).json({
+      success: false,
+      error: { code: 'SERVER_ERROR', message: 'Bir hata oluştu.' },
+    });
+  }
+});
+
+// ============ GERİ BİLDİRİM GÖNDER ============
+router.post('/feedback', authMiddleware, async (req: any, res) => {
+  try {
+    const userId = req.user.userId;
+    const { message } = req.body;
+    
+    if (!message || message.length < 10) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_MESSAGE', message: 'Mesaj en az 10 karakter olmalı.' },
+      });
+    }
+    
+    // Feedback'i kaydet (Feedback modeli yoksa log'a yaz)
+    console.log('[Feedback] New feedback from user:', userId, message);
+    
+    // Feedback modeliniz varsa:
+    // await prisma.feedback.create({
+    //   data: { userId, message },
+    // });
+    
+    return res.json({ success: true, message: 'Geri bildirim alındı.' });
+  } catch (error) {
+    console.error('[Feedback] Submit error:', error);
     return res.status(500).json({
       success: false,
       error: { code: 'SERVER_ERROR', message: 'Bir hata oluştu.' },

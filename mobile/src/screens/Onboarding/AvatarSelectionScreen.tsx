@@ -20,16 +20,8 @@ import { api } from '../../services/api';
 import { getPhotoUrl } from '../../utils/photoUrl';
 
 // 8 varsayılan avatar - emoji ve renk kombinasyonları
-const AVATARS = [
-  { id: 1, emoji: '👤', color: '#6C5CE7', name: 'Mor Profil' },
-  { id: 2, emoji: '👩', color: '#E84393', name: 'Pembe Kız' },
-  { id: 3, emoji: '🧔', color: '#00B894', name: 'Yeşil Sakallı' },
-  { id: 4, emoji: '👩‍🦱', color: '#FDCB6E', name: 'Sarı Kıvırcık' },
-  { id: 5, emoji: '🤓', color: '#0984E3', name: 'Mavi Gözlüklü' },
-  { id: 6, emoji: '🧢', color: '#D63031', name: 'Kırmızı Şapkalı' },
-  { id: 7, emoji: '🎧', color: '#00CEC9', name: 'Turkuaz Müzikçi' },
-  { id: 8, emoji: '👱‍♀️', color: '#A29BFE', name: 'Lavanta Saçlı' },
-];
+// Avatar listesi - merkezi dosyadan import
+import { AVATARS, getAvatar } from '../../constants/avatars';
 
 type Props = NativeStackScreenProps<any, 'AvatarSelection'>;
 
@@ -204,6 +196,7 @@ const AvatarSelectionScreen: React.FC<Props> = ({ navigation }) => {
         keyExtractor={(item) => item.id.toString()}
         numColumns={4}
         contentContainerStyle={styles.avatarGrid}
+        scrollEnabled={false}
       />
 
       <Text style={styles.selectedName}>
@@ -315,9 +308,9 @@ const styles = StyleSheet.create({
     paddingVertical: SPACING.lg,
   },
   avatarItem: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
     justifyContent: 'center',
     alignItems: 'center',
     margin: SPACING.sm,

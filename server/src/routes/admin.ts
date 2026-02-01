@@ -370,7 +370,7 @@ router.get('/verifications/pending', adminAuthMiddleware, async (req, res) => {
   });
 
   const verifications = users
-    .filter((u) => u.verificationVideo)
+    .filter((u) => u.verificationVideo && u.verificationVideo.length > 0)
     .map((u) => ({
       id: u.id,
       userId: u.id,
@@ -379,7 +379,7 @@ router.get('/verifications/pending', adminAuthMiddleware, async (req, res) => {
         age: u.age,
         profilePhotos: u.profilePhotos,
       },
-      verificationVideoUrl: u.verificationVideo!.url,
+      verificationVideoUrl: u.verificationVideo[0]?.url || '',
     }));
 
   return res.json({ success: true, data: verifications });
@@ -404,7 +404,7 @@ router.post(
   adminAuthMiddleware,
   validateBody(z.object({ reason: z.string() })),
   async (req, res) => {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const { reason } = req.body;
 
     await prisma.user.update({
@@ -444,7 +444,7 @@ router.post(
   adminAuthMiddleware,
   validateBody(z.object({ action: z.enum(['unshadowban', 'ban', 'reviewed']) })),
   async (req, res) => {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const { action } = req.body;
 
     const report = await prisma.report.findUnique({
@@ -472,7 +472,7 @@ router.post(
     }
 
     await prisma.report.update({
-      where: { id },
+      where: { id: id },
       data: { status: action === 'reviewed' ? 'REVIEWED' : 'ACTIONED' },
     });
 
@@ -503,10 +503,10 @@ router.post(
   adminAuthMiddleware,
   validateBody(z.object({ adminNote: z.string().optional() })),
   async (req, res) => {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const { adminNote } = req.body;
 
-    const redeem = await prisma.redeemRequest.findUnique({ where: { id } });
+    const redeem = await prisma.redeemRequest.findUnique({ where: { id: id } });
     if (!redeem) {
       return res.status(404).json({
         success: false,
@@ -522,7 +522,7 @@ router.post(
     });
 
     await prisma.redeemRequest.update({
-      where: { id },
+      where: { id: id },
       data: {
         status: 'APPROVED',
         adminNote,
@@ -539,11 +539,11 @@ router.post(
   adminAuthMiddleware,
   validateBody(z.object({ reason: z.string() })),
   async (req, res) => {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const { reason } = req.body;
 
     await prisma.redeemRequest.update({
-      where: { id },
+      where: { id: id },
       data: {
         status: 'REJECTED',
         adminNote: reason,

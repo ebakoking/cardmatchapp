@@ -1,0 +1,46 @@
+# ============================================================
+# GITHUB'A YÜKLENMEYECEK DOSYALAR
+# ============================================================
+
+# Bağımlılıklar
+node_modules/
+
+# Environment değişkenleri (API KEY'LER VAR!)
+.env
+.env.local
+.env.production
+
+# Expo
+.expo/
+dist/
+web-build/
+
+# Native builds
+ios/
+android/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+
+# Metro
+.metro-health-check*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# EAS
+.easignore

@@ -31,6 +31,16 @@ import ChatScreen from '../screens/Chat/ChatScreen';
 import ProfileScreen from '../screens/Profile/ProfileScreen';
 import VerificationSelfieScreen from '../screens/Profile/VerificationSelfieScreen';
 import InterestsScreen from '../screens/Profile/InterestsScreen';
+import {
+  ChangeNicknameScreen,
+  ChangeEmailScreen,
+  ChangePasswordScreen,
+  BlockedUsersScreen,
+  DeleteConversationsScreen,
+  AppLockScreen,
+  HelpScreen,
+  FeedbackScreen,
+} from '../screens/Profile/SettingsScreens';
 import FriendsScreen from '../screens/Friends/FriendsScreen';
 import FriendChatScreen from '../screens/Friends/FriendChatScreen';
 import FriendProfileScreen from '../screens/Friends/FriendProfileScreen';
@@ -38,6 +48,10 @@ import FriendCallScreen from '../screens/Friends/FriendCallScreen';
 import LeaderboardScreen from '../screens/Leaderboard/LeaderboardScreen';
 import SubscriptionScreen from '../screens/Subscription/SubscriptionScreen';
 import TokenPurchaseScreen from '../screens/Subscription/TokenPurchaseScreen';
+
+// Legal Screens
+import PrivacyPolicyScreen from '../screens/Legal/PrivacyPolicyScreen';
+import TermsOfServiceScreen from '../screens/Legal/TermsOfServiceScreen';
 
 // ============ TYPE DEFINITIONS ============
 
@@ -50,6 +64,8 @@ export type AuthStackParamList = {
   BioInput: undefined;
   VerificationVideo: undefined;
   Tutorial: undefined;
+  PrivacyPolicy: undefined;
+  TermsOfService: undefined;
 };
 
 export type ChatStackParamList = {
@@ -79,6 +95,7 @@ export type FriendsStackParamList = {
     friendshipId: string;
     friendNickname: string;
     friendPhoto?: string;
+    friendAvatarId?: number;
     friendOnline: boolean;
     friendId: string;
   };
@@ -90,6 +107,7 @@ export type FriendsStackParamList = {
     friendshipId: string;
     friendNickname: string;
     friendPhoto?: string;
+    friendAvatarId?: number;
     friendId: string;
     callType: 'voice' | 'video';
     isIncoming: boolean;
@@ -106,6 +124,17 @@ export type ProfileStackParamList = {
   AvatarSelection: undefined;
   VerificationSelfie: undefined;
   Interests: undefined;
+  PrivacyPolicy: undefined;
+  TermsOfService: undefined;
+  // Ayarlar ekranları
+  ChangeNickname: undefined;
+  ChangeEmail: undefined;
+  ChangePassword: undefined;
+  BlockedUsers: undefined;
+  DeleteConversations: undefined;
+  AppLock: undefined;
+  Help: undefined;
+  Feedback: undefined;
 };
 
 // RootStackParamList - Modal ekranlar için
@@ -163,6 +192,17 @@ function ProfileStackNavigator() {
       <ProfileStack.Screen name="AvatarSelection" component={AvatarSelectionScreen} />
       <ProfileStack.Screen name="VerificationSelfie" component={VerificationSelfieScreen} />
       <ProfileStack.Screen name="Interests" component={InterestsScreen} />
+      <ProfileStack.Screen name="PrivacyPolicy" component={PrivacyPolicyScreen} />
+      <ProfileStack.Screen name="TermsOfService" component={TermsOfServiceScreen} />
+      {/* Ayarlar Ekranları */}
+      <ProfileStack.Screen name="ChangeNickname" component={ChangeNicknameScreen} />
+      <ProfileStack.Screen name="ChangeEmail" component={ChangeEmailScreen} />
+      <ProfileStack.Screen name="ChangePassword" component={ChangePasswordScreen} />
+      <ProfileStack.Screen name="BlockedUsers" component={BlockedUsersScreen} />
+      <ProfileStack.Screen name="DeleteConversations" component={DeleteConversationsScreen} />
+      <ProfileStack.Screen name="AppLock" component={AppLockScreen} />
+      <ProfileStack.Screen name="Help" component={HelpScreen} />
+      <ProfileStack.Screen name="Feedback" component={FeedbackScreen} />
     </ProfileStack.Navigator>
   );
 }
@@ -373,6 +413,8 @@ export function RootNavigator() {
           <AuthStack.Screen name="BioInput" component={BioInputScreen} />
           <AuthStack.Screen name="VerificationVideo" component={VerificationVideoScreen} />
           <AuthStack.Screen name="Tutorial" component={TutorialScreen} />
+          <AuthStack.Screen name="PrivacyPolicy" component={PrivacyPolicyScreen} />
+          <AuthStack.Screen name="TermsOfService" component={TermsOfServiceScreen} />
         </AuthStack.Navigator>
       ) : !isOnboarded ? (
         // Kullanıcı giriş yapmış ama profil tamamlanmamış - Onboarding
@@ -385,6 +427,8 @@ export function RootNavigator() {
           <AuthStack.Screen name="BioInput" component={BioInputScreen} />
           <AuthStack.Screen name="VerificationVideo" component={VerificationVideoScreen} />
           <AuthStack.Screen name="Tutorial" component={TutorialScreen} />
+          <AuthStack.Screen name="PrivacyPolicy" component={PrivacyPolicyScreen} />
+          <AuthStack.Screen name="TermsOfService" component={TermsOfServiceScreen} />
         </AuthStack.Navigator>
       ) : (
         // Kullanıcı giriş yapmış ve profil tamamlanmış - Ana uygulama

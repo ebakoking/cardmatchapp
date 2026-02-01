@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../prisma';
 import { verifyJwt } from '../utils/jwt';
+import { emitToUser } from '../socket/io';
 
 const router = Router();
 
@@ -27,6 +28,8 @@ function authMiddleware(req: any, res: any, next: any) {
 }
 
 // Streak bazlı ödül tablosu
+// İlk 7 gün: artan ödüller
+// 7. günden sonra: her gün 5 elmas + her hafta tamamlandığında 50 elmas bonus
 const STREAK_REWARDS = [
   { day: 1, tokens: 5, label: '1. Gün' },
   { day: 2, tokens: 10, label: '2. Gün' },
@@ -34,8 +37,15 @@ const STREAK_REWARDS = [
   { day: 4, tokens: 20, label: '4. Gün' },
   { day: 5, tokens: 25, label: '5. Gün' },
   { day: 6, tokens: 30, label: '6. Gün' },
-  { day: 7, tokens: 50, label: '7. Gün 🎉' }, // Haftalık bonus
+  { day: 7, tokens: 50, label: '7. Gün 🎉' }, // İlk hafta bonusu
 ];
+
+// Haftalık bonus (7. günden sonra her hafta tamamlandığında)
+const WEEKLY_BONUS = 50;
+// Günlük sabit ödül (7. günden sonra)
+const DAILY_REWARD_AFTER_7 = 5;
+// Streak süresi (30 gün = 1 ay)
+const STREAK_DURATION_DAYS = 30;
 
 // Bugünün başlangıcını al (Türkiye saati)
 function getTodayStart(): Date {
@@ -92,9 +102,36 @@ router.get('/status', authMiddleware, async (req: any, res) => {
       }
     }
     
-    // Sonraki ödül (1-7 arası döngüsel)
-    const nextRewardDay = (currentStreak % 7) + 1;
-    const nextReward = STREAK_REWARDS[nextRewardDay - 1];
+    // Sonraki ödül hesapla
+    const nextDay = currentStreak + 1;
+    let nextTokens = 0;
+    let nextLabel = '';
+    let isNextWeeklyBonus = false;
+
+    if (nextDay <= 7) {
+      // İlk 7 gün
+      const reward = STREAK_REWARDS[nextDay - 1];
+      nextTokens = reward.tokens;
+      nextLabel = reward.label;
+    } else if (nextDay > STREAK_DURATION_DAYS) {
+      // 30 günü geçtiyse yeniden başla
+      nextTokens = STREAK_REWARDS[0].tokens;
+      nextLabel = '1. Gün (Yeni Döngü)';
+    } else {
+      // 7. günden sonra
+      nextTokens = DAILY_REWARD_AFTER_7;
+      nextLabel = `${nextDay}. Gün`;
+      
+      // Haftalık bonus günleri
+      if (nextDay % 7 === 0) {
+        nextTokens += WEEKLY_BONUS;
+        isNextWeeklyBonus = true;
+        nextLabel = `${nextDay}. Gün 🎉`;
+      }
+    }
+
+    // Haftalık bonuslu günleri ekle (UI için)
+    const weeklyBonusDays = [14, 21, 28];
 
     return res.json({
       success: true,
@@ -103,11 +140,16 @@ router.get('/status', authMiddleware, async (req: any, res) => {
         currentStreak,
         longestStreak: user.longestStreak || 0,
         nextReward: {
-          day: nextRewardDay,
-          tokens: nextReward.tokens,
-          label: nextReward.label,
+          day: nextDay > STREAK_DURATION_DAYS ? 1 : nextDay,
+          tokens: nextTokens,
+          label: nextLabel,
+          isWeeklyBonus: isNextWeeklyBonus,
         },
         allRewards: STREAK_REWARDS,
+        weeklyBonusDays,
+        weeklyBonus: WEEKLY_BONUS,
+        dailyRewardAfter7: DAILY_REWARD_AFTER_7,
+        streakDuration: STREAK_DURATION_DAYS,
         tokenBalance: user.tokenBalance,
       },
     });
@@ -170,10 +212,33 @@ router.post('/claim', authMiddleware, async (req: any, res) => {
       currentStreak = 1;
     }
 
-    // 7 günden sonra döngü (1-7)
-    const rewardDay = ((currentStreak - 1) % 7) + 1;
-    const reward = STREAK_REWARDS[rewardDay - 1];
-    const tokensEarned = reward.tokens;
+    // Streak 30 günü geçerse sıfırla (1 aylık döngü)
+    if (currentStreak > STREAK_DURATION_DAYS) {
+      currentStreak = 1;
+    }
+
+    // Ödül hesapla
+    let tokensEarned = 0;
+    let rewardLabel = '';
+    let isWeeklyBonus = false;
+
+    if (currentStreak <= 7) {
+      // İlk 7 gün: artan ödüller
+      const reward = STREAK_REWARDS[currentStreak - 1];
+      tokensEarned = reward.tokens;
+      rewardLabel = reward.label;
+    } else {
+      // 7. günden sonra: günlük 5 elmas
+      tokensEarned = DAILY_REWARD_AFTER_7;
+      rewardLabel = `${currentStreak}. Gün`;
+      
+      // Her hafta tamamlandığında (14, 21, 28. günler) bonus
+      if (currentStreak % 7 === 0) {
+        tokensEarned += WEEKLY_BONUS;
+        isWeeklyBonus = true;
+        rewardLabel = `${currentStreak}. Gün 🎉 Haftalık Bonus!`;
+      }
+    }
 
     // En uzun streak güncelle
     const newLongestStreak = Math.max(user.longestStreak || 0, currentStreak);
@@ -194,18 +259,28 @@ router.post('/claim', authMiddleware, async (req: any, res) => {
       },
     });
 
-    console.log(`[DailyReward] User ${userId} claimed ${tokensEarned} tokens (Day ${rewardDay}, Streak: ${currentStreak})`);
+    console.log(`[DailyReward] User ${userId} claimed ${tokensEarned} tokens (Day ${currentStreak}, Streak: ${currentStreak}, WeeklyBonus: ${isWeeklyBonus})`);
+
+    // 🔔 Anlık bakiye güncellemesi için socket emit
+    emitToUser(userId, 'token:earned', {
+      amount: tokensEarned,
+      newBalance: updatedUser.tokenBalance,
+      reason: 'daily_reward',
+    });
 
     return res.json({
       success: true,
       data: {
         tokensEarned,
-        rewardDay,
-        rewardLabel: reward.label,
+        rewardDay: currentStreak,
+        rewardLabel,
         currentStreak,
         longestStreak: updatedUser.longestStreak,
         newTokenBalance: updatedUser.tokenBalance,
-        message: `🎉 ${tokensEarned} elmas kazandın!`,
+        isWeeklyBonus,
+        message: isWeeklyBonus 
+          ? `🎉 ${tokensEarned} elmas kazandın! (Haftalık bonus dahil!)`
+          : `🎉 ${tokensEarned} elmas kazandın!`,
       },
     });
   } catch (error) {

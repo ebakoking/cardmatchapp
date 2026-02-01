@@ -242,6 +242,7 @@ const HomeScreen: React.FC<Props> = ({ navigation }) => {
 
   // Prime abonelik state
   const [purchasingPrime, setPurchasingPrime] = useState<string | null>(null);
+  const [primeSuccessModalVisible, setPrimeSuccessModalVisible] = useState(false);
 
   // Prime abonelik satın alma
   const handlePrimePurchase = (pkg: typeof PRIME_PACKAGES[0]) => {
@@ -265,7 +266,8 @@ const HomeScreen: React.FC<Props> = ({ navigation }) => {
               await new Promise(resolve => setTimeout(resolve, 1000));
               
               setPrimeModalVisible(false);
-              Alert.alert('Hoş Geldin Prime! 👑', 'CardMatch Prime üyesi oldun. Tüm özellikler artık aktif!');
+              // Temalı başarı modalı göster
+              setPrimeSuccessModalVisible(true);
             } catch (error) {
               Alert.alert('Hata', 'Satın alma sırasında bir hata oluştu. Lütfen tekrar deneyin.');
             } finally {
@@ -545,6 +547,62 @@ const HomeScreen: React.FC<Props> = ({ navigation }) => {
             checkDailyReward(); // Refresh status
           }} 
         />
+
+        {/* Prime Başarı Modal */}
+        <Modal
+          visible={primeSuccessModalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setPrimeSuccessModalVisible(false)}
+        >
+          <View style={styles.primeSuccessOverlay}>
+            <View style={styles.primeSuccessContent}>
+              {/* Crown Animation Area */}
+              <View style={styles.primeSuccessCrown}>
+                <Text style={styles.primeSuccessCrownEmoji}>👑</Text>
+              </View>
+              
+              {/* Title */}
+              <Text style={styles.primeSuccessTitle}>Hoş Geldin Prime!</Text>
+              
+              {/* Subtitle */}
+              <Text style={styles.primeSuccessSubtitle}>
+                CardMatch Prime üyesi oldun
+              </Text>
+              
+              {/* Features */}
+              <View style={styles.primeSuccessFeatures}>
+                <View style={styles.primeSuccessFeatureRow}>
+                  <Ionicons name="checkmark-circle" size={20} color="#FFD700" />
+                  <Text style={styles.primeSuccessFeatureText}>Sınırsız fotoğraf gönderimi</Text>
+                </View>
+                <View style={styles.primeSuccessFeatureRow}>
+                  <Ionicons name="checkmark-circle" size={20} color="#FFD700" />
+                  <Text style={styles.primeSuccessFeatureText}>Özel profil fotoğrafı</Text>
+                </View>
+                <View style={styles.primeSuccessFeatureRow}>
+                  <Ionicons name="checkmark-circle" size={20} color="#FFD700" />
+                  <Text style={styles.primeSuccessFeatureText}>Yaş ve mesafe filtreleri</Text>
+                </View>
+                <View style={styles.primeSuccessFeatureRow}>
+                  <Ionicons name="checkmark-circle" size={20} color="#FFD700" />
+                  <Text style={styles.primeSuccessFeatureText}>Öncelikli eşleşme</Text>
+                </View>
+              </View>
+              
+              {/* Button */}
+              <TouchableOpacity 
+                style={styles.primeSuccessButton}
+                onPress={() => {
+                  setPrimeSuccessModalVisible(false);
+                  refreshProfile();
+                }}
+              >
+                <Text style={styles.primeSuccessButtonText}>Harika! Başlayalım</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     </LinearGradient>
   );
@@ -1159,6 +1217,76 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     textAlign: 'center',
     opacity: 0.7,
+  },
+  // ========== Prime Success Modal ==========
+  primeSuccessOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(10, 10, 20, 0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: SPACING.xl,
+  },
+  primeSuccessContent: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 28,
+    padding: SPACING.xl,
+    alignItems: 'center',
+    width: '100%',
+    maxWidth: 340,
+    borderWidth: 2,
+    borderColor: '#FFD700',
+  },
+  primeSuccessCrown: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: 'rgba(255, 215, 0, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: SPACING.md,
+  },
+  primeSuccessCrownEmoji: {
+    fontSize: 48,
+  },
+  primeSuccessTitle: {
+    ...FONTS.h1,
+    color: '#FFD700',
+    marginBottom: SPACING.xs,
+    textAlign: 'center',
+  },
+  primeSuccessSubtitle: {
+    ...FONTS.body,
+    color: COLORS.textSecondary,
+    marginBottom: SPACING.lg,
+    textAlign: 'center',
+  },
+  primeSuccessFeatures: {
+    width: '100%',
+    marginBottom: SPACING.xl,
+  },
+  primeSuccessFeatureRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
+    marginBottom: SPACING.sm,
+    paddingHorizontal: SPACING.sm,
+  },
+  primeSuccessFeatureText: {
+    ...FONTS.body,
+    color: COLORS.text,
+  },
+  primeSuccessButton: {
+    backgroundColor: '#FFD700',
+    borderRadius: 16,
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.xl,
+    width: '100%',
+    alignItems: 'center',
+  },
+  primeSuccessButtonText: {
+    ...FONTS.button,
+    color: '#000',
+    fontWeight: '700',
   },
 });
 

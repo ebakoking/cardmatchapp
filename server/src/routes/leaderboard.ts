@@ -11,8 +11,8 @@ const REWARD_AMOUNTS: Record<number, number> = {
   3: 250,   // 3. sıra: 250 TL
 };
 
-// Etkinlik erişimi için minimum spark
-const EVENT_ACCESS_MIN_SPARK = 10000;
+// Etkinlik erişimi için minimum spark (100.000 spark = yaklaşık 90.000 TL gelir)
+const EVENT_ACCESS_MIN_SPARK = 100000;
 
 function authMiddleware(req: any, res: any, next: any) {
   const authHeader = req.headers.authorization;
@@ -73,9 +73,10 @@ router.get('/', authMiddleware, async (req: any, res) => {
       isPrime: u.isPrime,
       isPlus: u.isPlus,
       isBoostActive: u.isBoostActive,
+      // SADECE Prime kullanıcılar için profilePhotoUrl kullan, yoksa avatar gösterilir
       profilePhoto: u.isPrime && u.profilePhotoUrl 
         ? u.profilePhotoUrl 
-        : u.profilePhotos[0]?.url || null,
+        : null,
       monthlySparksEarned: u.monthlySparksEarned,
       totalSparksEarned: u.totalSparksEarned,
       rank: index + 1,

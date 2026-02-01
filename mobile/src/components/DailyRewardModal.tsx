@@ -30,8 +30,11 @@ interface RewardStatus {
   canClaim: boolean;
   currentStreak: number;
   longestStreak: number;
-  nextReward: RewardDay;
+  nextReward: RewardDay & { isWeeklyBonus?: boolean };
   allRewards: RewardDay[];
+  weeklyBonus?: number;
+  dailyRewardAfter7?: number;
+  streakDuration?: number;
 }
 
 const DailyRewardModal: React.FC<DailyRewardModalProps> = ({ visible, onClose }) => {
@@ -165,8 +168,11 @@ const DailyRewardModal: React.FC<DailyRewardModalProps> = ({ visible, onClose })
               <Text style={styles.claimedTitle}>Tebrikler!</Text>
               <Text style={styles.claimedTokens}>+{claimedTokens} 💎</Text>
               <Text style={styles.claimedSubtitle}>
-                {status?.currentStreak} günlük seri!
+                🔥 {status?.currentStreak} günlük seri!
               </Text>
+              {(status?.currentStreak || 0) >= 7 && (status?.currentStreak || 0) % 7 === 0 && (
+                <Text style={styles.weeklyBonusText}>Haftalık bonus dahil! 🎊</Text>
+              )}
               <TouchableOpacity style={styles.claimButton} onPress={onClose}>
                 <Text style={styles.claimButtonText}>Harika!</Text>
               </TouchableOpacity>
@@ -176,7 +182,7 @@ const DailyRewardModal: React.FC<DailyRewardModalProps> = ({ visible, onClose })
             <View style={styles.content}>
               <Text style={styles.title}>🎁 Günlük Ödül</Text>
               <Text style={styles.subtitle}>
-                Her gün giriş yap, ücretsiz elmas kazan!
+                Her gün giriş yap, elmas kazan! 7. günden sonra her hafta +50💎 bonus!
               </Text>
 
               {/* Streak Info */}
@@ -389,6 +395,12 @@ const styles = StyleSheet.create({
   claimedSubtitle: {
     ...FONTS.body,
     color: COLORS.textMuted,
+    marginBottom: SPACING.sm,
+  },
+  weeklyBonusText: {
+    ...FONTS.caption,
+    color: COLORS.accent,
+    fontWeight: '600',
     marginBottom: SPACING.lg,
   },
 });
