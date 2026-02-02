@@ -204,6 +204,17 @@ model User {
   tokenPurchases         TokenPurchase[]
   redeemRequests         RedeemRequest[]
   rewardClaims           RewardClaim[]
+
+  // ============ PERFORMANS İNDEKSLERİ ============
+  @@index([status])                           // Aktif kullanıcı sorguları
+  @@index([gender, interestedIn, status])     // Eşleşme algoritması
+  @@index([isOnline, status])                 // Online kullanıcılar
+  @@index([city, status])                     // Şehir bazlı arama
+  @@index([latitude, longitude])              // Konum bazlı arama
+  @@index([tokenBalance])                     // Token sıralaması
+  @@index([monthlySparksEarned])              // Leaderboard
+  @@index([createdAt])                        // Yeni kullanıcılar
+  @@index([lastSeenAt])                       // Son görülme
 }
 
 enum PhotoType {

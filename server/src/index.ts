@@ -85,6 +85,117 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true });
 });
 
+// Privacy Policy sayfası
+app.get('/privacy', (_req, res) => {
+  res.send(`
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gizlilik Politikası - CardMatch</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; background: #0B1020; color: #fff; }
+    h1 { color: #8B5CF6; }
+    h2 { color: #A78BFA; margin-top: 30px; }
+    p { margin: 15px 0; }
+  </style>
+</head>
+<body>
+  <h1>Gizlilik Politikası</h1>
+  <p><strong>Son güncelleme:</strong> 2 Şubat 2026</p>
+  
+  <h2>1. Toplanan Veriler</h2>
+  <p>CardMatch uygulaması aşağıdaki verileri toplar:</p>
+  <ul>
+    <li><strong>Hesap Bilgileri:</strong> Ad, e-posta adresi, telefon numarası</li>
+    <li><strong>Profil Bilgileri:</strong> Yaş, cinsiyet, biyografi, şehir</li>
+    <li><strong>Konum:</strong> Yakındaki kullanıcıları bulmak için konum bilgisi</li>
+    <li><strong>İçerik:</strong> Fotoğraflar, mesajlar, sesli mesajlar</li>
+    <li><strong>Kullanım Verileri:</strong> Uygulama içi etkileşimler</li>
+  </ul>
+  
+  <h2>2. Verilerin Kullanımı</h2>
+  <p>Topladığımız veriler şu amaçlarla kullanılır:</p>
+  <ul>
+    <li>Hesabınızı oluşturmak ve yönetmek</li>
+    <li>Size yakın kullanıcıları göstermek</li>
+    <li>Eşleşme ve sohbet özelliklerini sağlamak</li>
+    <li>Uygulama deneyimini iyileştirmek</li>
+  </ul>
+  
+  <h2>3. Veri Paylaşımı</h2>
+  <p>Verileriniz üçüncü taraflarla satılmaz. Sadece şu durumlarda paylaşılabilir:</p>
+  <ul>
+    <li>Yasal zorunluluk halinde</li>
+    <li>Hizmet sağlayıcılarımızla (sunucu, depolama)</li>
+  </ul>
+  
+  <h2>4. Veri Güvenliği</h2>
+  <p>Verileriniz şifreli bağlantılar (HTTPS) ile korunur ve güvenli sunucularda saklanır.</p>
+  
+  <h2>5. Haklarınız</h2>
+  <p>İstediğiniz zaman hesabınızı silebilir ve verilerinizin silinmesini talep edebilirsiniz.</p>
+  
+  <h2>6. İletişim</h2>
+  <p>Sorularınız için: <a href="mailto:destek@cardmatchapp.com" style="color: #8B5CF6;">destek@cardmatchapp.com</a></p>
+</body>
+</html>
+  `);
+});
+
+// Terms of Service sayfası
+app.get('/terms', (_req, res) => {
+  res.send(`
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kullanım Koşulları - CardMatch</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; background: #0B1020; color: #fff; }
+    h1 { color: #8B5CF6; }
+    h2 { color: #A78BFA; margin-top: 30px; }
+    p { margin: 15px 0; }
+  </style>
+</head>
+<body>
+  <h1>Kullanım Koşulları</h1>
+  <p><strong>Son güncelleme:</strong> 2 Şubat 2026</p>
+  
+  <h2>1. Hizmet Tanımı</h2>
+  <p>CardMatch, kullanıcıların eğlenceli sorularla eşleşip sohbet edebileceği bir sosyal tanışma uygulamasıdır.</p>
+  
+  <h2>2. Kullanıcı Şartları</h2>
+  <ul>
+    <li>18 yaşından büyük olmalısınız</li>
+    <li>Gerçek bilgilerle kayıt olmalısınız</li>
+    <li>Başkalarına saygılı davranmalısınız</li>
+    <li>Yasadışı içerik paylaşmamalısınız</li>
+  </ul>
+  
+  <h2>3. Yasaklanan Davranışlar</h2>
+  <ul>
+    <li>Sahte profil oluşturmak</li>
+    <li>Taciz veya zorbalık</li>
+    <li>Spam veya reklam</li>
+    <li>Uygunsuz içerik paylaşmak</li>
+  </ul>
+  
+  <h2>4. Hesap Sonlandırma</h2>
+  <p>Kuralları ihlal eden hesaplar uyarı verilmeden kapatılabilir.</p>
+  
+  <h2>5. Sorumluluk Reddi</h2>
+  <p>CardMatch, kullanıcılar arası etkileşimlerden sorumlu değildir. Güvenliğiniz için dikkatli olun.</p>
+  
+  <h2>6. İletişim</h2>
+  <p>Sorularınız için: <a href="mailto:destek@cardmatchapp.com" style="color: #8B5CF6;">destek@cardmatchapp.com</a></p>
+</body>
+</html>
+  `);
+});
+
 // Feature flags endpoint - Mobile bu endpoint'ten özelliklerin durumunu öğrenir
 app.get('/api/features', (_req, res) => {
   res.json({

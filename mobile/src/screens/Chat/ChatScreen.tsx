@@ -108,7 +108,7 @@ interface ChatMessage {
 }
 
 // Stage süreleri
-const STAGE_DURATION = 10; // TEST: 10 saniye
+const STAGE_DURATION = 120; // 120 saniye (2 dakika) per stage
 const STAGE_THRESHOLDS = [0, 10, 20, 30, 40];
 
 const ChatScreen: React.FC<Props> = ({ route, navigation }) => {

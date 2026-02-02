@@ -81,7 +81,6 @@
       "socketUrl": "",
       "revenuecatPublicKey": "",
       "eas": {
-        "projectId": "your-eas-project-id"
       }
     }
   }

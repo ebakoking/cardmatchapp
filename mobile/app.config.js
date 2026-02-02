@@ -51,6 +51,7 @@ export default {
       'expo-web-browser',
       'expo-secure-store',
       'expo-apple-authentication',
+      './plugins/withDisableFollyCoroutines',
     ],
     extra: {
       // ============================================================
@@ -70,7 +71,7 @@ export default {
       
       // EAS
       eas: {
-        projectId: 'your-project-id',
+        projectId: 'e5d78c7d-0cd4-4332-9789-513ed87bd31e',
       },
     },
   },
