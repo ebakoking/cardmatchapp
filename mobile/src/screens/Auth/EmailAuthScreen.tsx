@@ -29,7 +29,7 @@ type AuthStackParamList = {
 };
 
 type Props = NativeStackScreenProps<AuthStackParamList, 'EmailAuth'>;
-type AuthMode = 'login' | 'register';
+type AuthMode = 'login' | 'register' | 'verify';
 
 const EmailAuthScreen: React.FC<Props> = ({ navigation }) => {
   const { loginWithToken } = useAuth();
@@ -37,6 +37,8 @@ const EmailAuthScreen: React.FC<Props> = ({ navigation }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [testOtp, setTestOtp] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   
@@ -110,9 +112,12 @@ const EmailAuthScreen: React.FC<Props> = ({ navigation }) => {
       });
 
       if (response.data.success) {
-        const { accessToken, refreshToken, user } = response.data.data;
-        await loginWithToken(accessToken, refreshToken, user);
-        navigation.navigate('ProfileSetup');
+        // Doğrulama kodu gönderildi, verify moduna geç
+        if (response.data.testOtp) {
+          setTestOtp(response.data.testOtp);
+        }
+        setMode('verify');
+        Alert.alert('Başarılı', 'Doğrulama kodu e-posta adresinize gönderildi.');
       }
     } catch (error: any) {
       const errorCode = error.response?.data?.error?.code;
@@ -128,11 +133,39 @@ const EmailAuthScreen: React.FC<Props> = ({ navigation }) => {
     }
   };
 
+  const handleVerify = async () => {
+    if (verificationCode.length !== 6) {
+      Alert.alert('Hata', 'Lütfen 6 haneli doğrulama kodunu girin.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const response = await api.post('/api/auth/email/verify', {
+        email: email.trim().toLowerCase(),
+        code: verificationCode,
+      });
+
+      if (response.data.success) {
+        const { accessToken, refreshToken, user } = response.data.data;
+        await loginWithToken(accessToken, refreshToken, user);
+        navigation.navigate('ProfileSetup');
+      }
+    } catch (error: any) {
+      const message = error.response?.data?.error?.message || 'Doğrulama başarısız.';
+      Alert.alert('Hata', message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSubmit = () => {
     if (mode === 'login') {
       handleLogin();
-    } else {
+    } else if (mode === 'register') {
       handleRegister();
+    } else {
+      handleVerify();
     }
   };
 
@@ -170,147 +203,212 @@ const EmailAuthScreen: React.FC<Props> = ({ navigation }) => {
                   resizeMode="contain"
                 />
                 <Text style={styles.title}>
-                  {mode === 'login' ? 'Tekrar Hoşgeldin' : 'Hesap Oluştur'}
+                  {mode === 'login' ? 'Tekrar Hoşgeldin' : mode === 'register' ? 'Hesap Oluştur' : 'E-posta Doğrula'}
                 </Text>
                 <Text style={styles.subtitle}>
                   {mode === 'login' 
                     ? 'E-posta ile güvenli giriş yap.'
-                    : 'Hemen kayıt ol, 1 dakika içinde başla.'
+                    : mode === 'register'
+                    ? 'Hemen kayıt ol, 1 dakika içinde başla.'
+                    : `${email} adresine gönderilen kodu girin.`
                   }
                 </Text>
-                <Text style={styles.trustBadges}>
-                  Şifreli bağlantı · Veriler güvende · Spam yok
-                </Text>
+                {mode !== 'verify' && (
+                  <Text style={styles.trustBadges}>
+                    Şifreli bağlantı · Veriler güvende · Spam yok
+                  </Text>
+                )}
               </View>
 
               {/* Form */}
               <View style={styles.form}>
                 
-                {/* Email */}
-                <View style={styles.inputGroup}>
-                  <Text style={styles.label}>E-posta</Text>
-                  <View style={styles.inputWrapper}>
-                    <TextInput
-                      style={[
-                        styles.input,
-                        email.length > 0 && !isEmailValid && styles.inputError,
-                      ]}
-                      placeholder="ornek@email.com"
-                      placeholderTextColor={COLORS.textDisabled}
-                      value={email}
-                      onChangeText={setEmail}
-                      keyboardType="email-address"
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      editable={!loading}
-                      autoFocus
-                    />
-                    {email.length > 0 && isEmailValid && (
-                      <Text style={styles.inputCheck}>✓</Text>
-                    )}
-                  </View>
-                  {email.length > 0 && !isEmailValid && (
-                    <Text style={styles.errorText}>Geçerli bir e-posta girin</Text>
-                  )}
-                </View>
+                {mode === 'verify' ? (
+                  <>
+                    {/* Verification Code Input */}
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.label}>Doğrulama Kodu</Text>
+                      <TextInput
+                        style={styles.input}
+                        placeholder="000000"
+                        placeholderTextColor={COLORS.textDisabled}
+                        value={verificationCode}
+                        onChangeText={(text) => setVerificationCode(text.replace(/[^0-9]/g, '').slice(0, 6))}
+                        keyboardType="number-pad"
+                        maxLength={6}
+                        editable={!loading}
+                        autoFocus
+                      />
+                    </View>
 
-                {/* Password */}
-                <View style={styles.inputGroup}>
-                  <Text style={styles.label}>Şifre</Text>
-                  <View style={styles.inputWrapper}>
-                    <TextInput
-                      style={[
-                        styles.input,
-                        styles.passwordInput,
-                        password.length > 0 && !isPasswordValid && styles.inputError,
-                      ]}
-                      placeholder="••••••••"
-                      placeholderTextColor={COLORS.textDisabled}
-                      value={password}
-                      onChangeText={setPassword}
-                      secureTextEntry={!showPassword}
-                      editable={!loading}
-                    />
+                    {/* Test OTP göster */}
+                    {testOtp && (
+                      <View style={styles.testOtpContainer}>
+                        <Text style={styles.testOtpLabel}>Test Kodu:</Text>
+                        <Text style={styles.testOtpCode}>{testOtp}</Text>
+                      </View>
+                    )}
+
+                    {/* CTA */}
+                    <View style={styles.ctaContainer}>
+                      <TouchableOpacity
+                        style={[
+                          styles.submitButton,
+                          verificationCode.length !== 6 && styles.submitButtonDisabled,
+                        ]}
+                        onPress={handleSubmit}
+                        disabled={loading || verificationCode.length !== 6}
+                        activeOpacity={0.85}
+                      >
+                        {loading ? (
+                          <ActivityIndicator color={COLORS.background} />
+                        ) : (
+                          <Text style={styles.submitButtonText}>Doğrula ve Devam Et</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+
+                    {/* Geri dön */}
                     <TouchableOpacity
-                      style={styles.showPasswordBtn}
-                      onPress={() => setShowPassword(!showPassword)}
+                      style={styles.modeToggle}
+                      onPress={() => {
+                        setMode('register');
+                        setVerificationCode('');
+                        setTestOtp(null);
+                      }}
                     >
-                      <Text style={styles.showPasswordIcon}>
-                        {showPassword ? '🙈' : '👁'}
-                      </Text>
+                      <Text style={styles.modeToggleLink}>← Geri Dön</Text>
                     </TouchableOpacity>
-                  </View>
-                  {password.length > 0 && !isPasswordValid && (
-                    <Text style={styles.errorText}>En az 6 karakter gerekli</Text>
-                  )}
-                </View>
+                  </>
+                ) : (
+                  <>
+                    {/* Email */}
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.label}>E-posta</Text>
+                      <View style={styles.inputWrapper}>
+                        <TextInput
+                          style={[
+                            styles.input,
+                            email.length > 0 && !isEmailValid && styles.inputError,
+                          ]}
+                          placeholder="ornek@email.com"
+                          placeholderTextColor={COLORS.textDisabled}
+                          value={email}
+                          onChangeText={setEmail}
+                          keyboardType="email-address"
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          editable={!loading}
+                          autoFocus
+                        />
+                        {email.length > 0 && isEmailValid && (
+                          <Text style={styles.inputCheck}>✓</Text>
+                        )}
+                      </View>
+                      {email.length > 0 && !isEmailValid && (
+                        <Text style={styles.errorText}>Geçerli bir e-posta girin</Text>
+                      )}
+                    </View>
 
-                {/* Confirm Password */}
-                {mode === 'register' && (
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Şifre Tekrar</Text>
-                    <TextInput
-                      style={[
-                        styles.input,
-                        confirmPassword.length > 0 && !isConfirmPasswordValid && styles.inputError,
-                      ]}
-                      placeholder="••••••••"
-                      placeholderTextColor={COLORS.textDisabled}
-                      value={confirmPassword}
-                      onChangeText={setConfirmPassword}
-                      secureTextEntry={!showPassword}
-                      editable={!loading}
-                    />
-                    {confirmPassword.length > 0 && !isConfirmPasswordValid && (
-                      <Text style={styles.errorText}>Şifreler eşleşmiyor</Text>
+                    {/* Password */}
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.label}>Şifre</Text>
+                      <View style={styles.inputWrapper}>
+                        <TextInput
+                          style={[
+                            styles.input,
+                            styles.passwordInput,
+                            password.length > 0 && !isPasswordValid && styles.inputError,
+                          ]}
+                          placeholder="••••••••"
+                          placeholderTextColor={COLORS.textDisabled}
+                          value={password}
+                          onChangeText={setPassword}
+                          secureTextEntry={!showPassword}
+                          editable={!loading}
+                        />
+                        <TouchableOpacity
+                          style={styles.showPasswordBtn}
+                          onPress={() => setShowPassword(!showPassword)}
+                        >
+                          <Text style={styles.showPasswordIcon}>
+                            {showPassword ? '🙈' : '👁'}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                      {password.length > 0 && !isPasswordValid && (
+                        <Text style={styles.errorText}>En az 6 karakter gerekli</Text>
+                      )}
+                    </View>
+
+                    {/* Confirm Password */}
+                    {mode === 'register' && (
+                      <View style={styles.inputGroup}>
+                        <Text style={styles.label}>Şifre Tekrar</Text>
+                        <TextInput
+                          style={[
+                            styles.input,
+                            confirmPassword.length > 0 && !isConfirmPasswordValid && styles.inputError,
+                          ]}
+                          placeholder="••••••••"
+                          placeholderTextColor={COLORS.textDisabled}
+                          value={confirmPassword}
+                          onChangeText={setConfirmPassword}
+                          secureTextEntry={!showPassword}
+                          editable={!loading}
+                        />
+                        {confirmPassword.length > 0 && !isConfirmPasswordValid && (
+                          <Text style={styles.errorText}>Şifreler eşleşmiyor</Text>
+                        )}
+                      </View>
                     )}
-                  </View>
-                )}
 
-                {/* CTA */}
-                <View style={styles.ctaContainer}>
-                  <TouchableOpacity
-                    style={[
-                      styles.submitButton,
-                      !isFormValid && styles.submitButtonDisabled,
-                    ]}
-                    onPress={handleSubmit}
-                    disabled={loading || !isFormValid}
-                    activeOpacity={0.85}
-                  >
-                    {loading ? (
-                      <ActivityIndicator color={COLORS.background} />
-                    ) : (
-                      <Text style={styles.submitButtonText}>
-                        {mode === 'login' ? 'Giriş Yap' : 'Kayıt Ol ve Başla'}
+                    {/* CTA */}
+                    <View style={styles.ctaContainer}>
+                      <TouchableOpacity
+                        style={[
+                          styles.submitButton,
+                          !isFormValid && styles.submitButtonDisabled,
+                        ]}
+                        onPress={handleSubmit}
+                        disabled={loading || !isFormValid}
+                        activeOpacity={0.85}
+                      >
+                        {loading ? (
+                          <ActivityIndicator color={COLORS.background} />
+                        ) : (
+                          <Text style={styles.submitButtonText}>
+                            {mode === 'login' ? 'Giriş Yap' : 'Kayıt Ol ve Başla'}
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                      {mode === 'register' && (
+                        <Text style={styles.ctaSubtext}>1 dakika sürer</Text>
+                      )}
+                    </View>
+
+                    {/* Trust Message */}
+                    <View style={styles.trustMessage}>
+                      <Text style={styles.trustIcon}>🔒</Text>
+                      <Text style={styles.trustText}>Bilgilerin şifreli olarak saklanır</Text>
+                    </View>
+
+                    {/* Mode Toggle */}
+                    <View style={styles.modeToggle}>
+                      <Text style={styles.modeToggleText}>
+                        {mode === 'login' ? 'Hesabın yok mu? ' : 'Zaten hesabın var mı? '}
                       </Text>
-                    )}
-                  </TouchableOpacity>
-                  {mode === 'register' && (
-                    <Text style={styles.ctaSubtext}>1 dakika sürer</Text>
-                  )}
-                </View>
-
-                {/* Trust Message */}
-                <View style={styles.trustMessage}>
-                  <Text style={styles.trustIcon}>🔒</Text>
-                  <Text style={styles.trustText}>Bilgilerin şifreli olarak saklanır</Text>
-                </View>
-
-                {/* Mode Toggle */}
-                <View style={styles.modeToggle}>
-                  <Text style={styles.modeToggleText}>
-                    {mode === 'login' ? 'Hesabın yok mu? ' : 'Zaten hesabın var mı? '}
-                  </Text>
-                  <TouchableOpacity
-                    onPress={() => setMode(mode === 'login' ? 'register' : 'login')}
-                    disabled={loading}
-                  >
-                    <Text style={styles.modeToggleLink}>
-                      {mode === 'login' ? 'Kayıt Ol' : 'Giriş Yap'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
+                      <TouchableOpacity
+                        onPress={() => setMode(mode === 'login' ? 'register' : 'login')}
+                        disabled={loading}
+                      >
+                        <Text style={styles.modeToggleLink}>
+                          {mode === 'login' ? 'Kayıt Ol' : 'Giriş Yap'}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                )}
               </View>
             </Animated.View>
           </ScrollView>
@@ -494,6 +592,27 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: COLORS.accent,
     fontWeight: '600',
+  },
+  
+  // Test OTP
+  testOtpContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(108, 92, 231, 0.15)',
+    borderRadius: 12,
+    padding: 12,
+    gap: 8,
+  },
+  testOtpLabel: {
+    fontSize: 14,
+    color: COLORS.textSecondary,
+  },
+  testOtpCode: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: COLORS.accent,
+    letterSpacing: 4,
   },
 });
 

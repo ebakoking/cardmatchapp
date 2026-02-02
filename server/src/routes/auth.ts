@@ -10,7 +10,7 @@ import {
   verifyAccessToken,
 } from '../utils/jwt';
 import { prisma } from '../prisma';
-import { sendOtpSms } from '../services/sms';
+import { sendOtpSms, verifyOtpCode } from '../services/sms';
 import { sendVerificationEmail, sendWelcomeEmail } from '../services/email';
 
 // Google OAuth Client (token doğrulama için)
@@ -27,6 +27,14 @@ const router = Router();
 // ============ IN-MEMORY OTP STORE (MVP) ============
 // Production'da Redis veya database kullanılmalı
 const otpStore = new Map<string, { code: string; expiresAt: number }>();
+
+// Email doğrulama için OTP store
+const emailOtpStore = new Map<string, { 
+  code: string; 
+  expiresAt: number; 
+  password: string;
+  nickname?: string;
+}>();
 
 // ============ VALIDATION SCHEMAS ============
 
@@ -121,33 +129,41 @@ function isProfileComplete(user: any): boolean {
 router.post('/request-otp', validateBody(requestOtpSchema), async (req, res) => {
   const { phoneNumber } = req.body as z.infer<typeof requestOtpSchema>;
 
-  const code = Math.floor(100000 + Math.random() * 900000).toString();
-  const expiresAt = Date.now() + 60 * 1000; // 1 dakika (mobil ile senkron)
+  // Twilio yapılandırılmış mı kontrol et
+  const isTwilioConfigured = !!process.env.TWILIO_ACCOUNT_SID && !!process.env.TWILIO_VERIFY_SERVICE_SID;
+  const isTestMode = !isTwilioConfigured;
 
-  otpStore.set(phoneNumber, { code, expiresAt });
+  if (isTwilioConfigured) {
+    // Twilio Verify ile SMS gönder
+    const smsResult = await sendOtpSms(phoneNumber);
+    
+    if (!smsResult.success) {
+      console.error(`[Auth] Twilio SMS failed for ${phoneNumber}:`, smsResult.error);
+      return res.status(500).json({
+        success: false,
+        error: { code: 'SMS_FAILED', message: 'SMS gönderilemedi. Lütfen tekrar deneyin.' },
+      });
+    }
 
-  // SMS gönder (development'ta sadece log, production'da Netgsm)
-  const smsResult = await sendOtpSms(phoneNumber, code);
-  
-  // Test modu: SMS servisi yoksa bile devam et
-  const isTestMode = process.env.ENABLE_TEST_OTP === 'true' || !process.env.NETGSM_USERCODE;
-  
-  if (!smsResult.success && !isTestMode) {
-    console.error(`[Auth] SMS failed for ${phoneNumber}:`, smsResult.error);
-    return res.status(500).json({
-      success: false,
-      error: { code: 'SMS_FAILED', message: 'SMS gönderilemedi. Lütfen tekrar deneyin.' },
+    console.log(`[Auth] OTP sent via Twilio to ${phoneNumber}`);
+    return res.json({ 
+      success: true,
+      message: 'Doğrulama kodu gönderildi.',
+      useTwilioVerify: true, // Mobil uygulamaya Twilio kullanıldığını bildir
+    });
+  } else {
+    // Test modu: Lokal OTP oluştur
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = Date.now() + 60 * 1000;
+    otpStore.set(phoneNumber, { code, expiresAt });
+
+    console.log(`[Auth] OTP for ${phoneNumber}: ${code} (TEST MODE)`);
+    return res.json({ 
+      success: true,
+      message: 'Test modu: OTP aşağıda gösterildi.',
+      testOtp: code,
     });
   }
-
-  console.log(`[Auth] OTP for ${phoneNumber}: ${code}${isTestMode ? ' (TEST MODE)' : ''}`);
-
-  return res.json({ 
-    success: true,
-    message: isTestMode ? 'Test modu: OTP aşağıda gösterildi.' : 'OTP gönderildi.',
-    // Test modunda OTP'yi döndür
-    ...(isTestMode && { testOtp: code }),
-  });
 });
 
 /**
@@ -157,15 +173,29 @@ router.post('/request-otp', validateBody(requestOtpSchema), async (req, res) => 
 router.post('/verify-otp', validateBody(verifyOtpSchema), async (req, res) => {
   const { phoneNumber, code } = req.body as z.infer<typeof verifyOtpSchema>;
 
-  const record = otpStore.get(phoneNumber);
-  if (!record || record.code !== code || record.expiresAt < Date.now()) {
-    return res.status(400).json({
-      success: false,
-      error: { code: 'INVALID_OTP', message: 'OTP geçersiz veya süresi dolmuş.' },
-    });
-  }
+  // Twilio yapılandırılmış mı kontrol et
+  const isTwilioConfigured = !!process.env.TWILIO_ACCOUNT_SID && !!process.env.TWILIO_VERIFY_SERVICE_SID;
 
-  otpStore.delete(phoneNumber);
+  if (isTwilioConfigured) {
+    // Twilio Verify ile doğrula
+    const verifyResult = await verifyOtpCode(phoneNumber, code);
+    if (!verifyResult.success) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_OTP', message: verifyResult.error || 'OTP geçersiz veya süresi dolmuş.' },
+      });
+    }
+  } else {
+    // Test modu: Lokal OTP kontrolü
+    const record = otpStore.get(phoneNumber);
+    if (!record || record.code !== code || record.expiresAt < Date.now()) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'INVALID_OTP', message: 'OTP geçersiz veya süresi dolmuş.' },
+      });
+    }
+    otpStore.delete(phoneNumber);
+  }
 
   // Kullanıcıyı bul veya oluştur
   let user = await prisma.user.findUnique({ where: { phoneNumber } });
@@ -233,7 +263,7 @@ router.post('/verify-otp', validateBody(verifyOtpSchema), async (req, res) => {
 
 /**
  * POST /api/auth/email/register
- * E-posta ile kayıt
+ * E-posta ile kayıt - Doğrulama kodu gönderir
  */
 router.post('/email/register', validateBody(emailRegisterSchema), async (req, res) => {
   const { email, password, nickname } = req.body as z.infer<typeof emailRegisterSchema>;
@@ -248,7 +278,6 @@ router.post('/email/register', validateBody(emailRegisterSchema), async (req, re
   }
 
   // Nickname kontrolü
-  const finalNickname = nickname || `email_${Date.now()}`;
   if (nickname) {
     const existingNickname = await prisma.user.findUnique({ where: { nickname } });
     if (existingNickname) {
@@ -259,14 +288,85 @@ router.post('/email/register', validateBody(emailRegisterSchema), async (req, re
     }
   }
 
-  // Şifreyi hashle
+  // 6 haneli doğrulama kodu oluştur
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const expiresAt = Date.now() + 5 * 60 * 1000; // 5 dakika
+
+  // Şifreyi hashle ve store'a kaydet
   const passwordHash = await bcrypt.hash(password, 12);
+  emailOtpStore.set(email, {
+    code,
+    expiresAt,
+    password: passwordHash,
+    nickname,
+  });
+
+  // Email gönder
+  const emailResult = await sendVerificationEmail(email, code);
+  
+  console.log(`[Auth] Email verification code sent to: ${email}, success: ${emailResult.success}`);
+
+  // Test modunda kodu döndür
+  const response: any = {
+    success: true,
+    message: 'Doğrulama kodu e-posta adresinize gönderildi.',
+    expiresIn: 300, // 5 dakika
+  };
+
+  // Test modu - Resend yapılandırılmamışsa kodu döndür
+  if (!process.env.RESEND_API_KEY || process.env.ENABLE_TEST_OTP === 'true') {
+    response.testOtp = code;
+    console.log(`[Auth] Test mode - Email OTP: ${code}`);
+  }
+
+  return res.json(response);
+});
+
+/**
+ * POST /api/auth/email/verify
+ * E-posta doğrulama kodunu kontrol et ve hesap oluştur
+ */
+const emailVerifySchema = z.object({
+  email: z.string().email(),
+  code: z.string().length(6),
+});
+
+router.post('/email/verify', validateBody(emailVerifySchema), async (req, res) => {
+  const { email, code } = req.body as z.infer<typeof emailVerifySchema>;
+
+  // Store'dan bilgileri al
+  const stored = emailOtpStore.get(email);
+  if (!stored) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'NO_PENDING_VERIFICATION', message: 'Doğrulama beklemiyor. Lütfen tekrar kayıt olun.' },
+    });
+  }
+
+  // Süre kontrolü
+  if (Date.now() > stored.expiresAt) {
+    emailOtpStore.delete(email);
+    return res.status(400).json({
+      success: false,
+      error: { code: 'CODE_EXPIRED', message: 'Doğrulama kodu süresi dolmuş. Lütfen tekrar kayıt olun.' },
+    });
+  }
+
+  // Kod kontrolü
+  if (stored.code !== code) {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'INVALID_CODE', message: 'Doğrulama kodu hatalı.' },
+    });
+  }
 
   // Kullanıcı oluştur
+  const finalNickname = stored.nickname || `email_${Date.now()}`;
+  
   const user = await prisma.user.create({
     data: {
       email,
-      passwordHash,
+      passwordHash: stored.password,
       nickname: finalNickname,
       age: 18,
       gender: 'OTHER',
@@ -274,13 +374,22 @@ router.post('/email/register', validateBody(emailRegisterSchema), async (req, re
       city: 'Istanbul',
       country: 'TR',
       authProvider: 'email',
+      emailVerified: true,
     },
   });
 
-  console.log(`[Auth] New email user created: ${user.id}`);
+  // Store'dan sil
+  emailOtpStore.delete(email);
+
+  console.log(`[Auth] New email user created after verification: ${user.id}`);
 
   // Token çifti oluştur
   const { accessToken, refreshToken } = await createTokensForUser(user.id);
+
+  // Hoşgeldin emaili gönder
+  sendWelcomeEmail(email, finalNickname).catch(err => {
+    console.error('[Auth] Welcome email failed:', err);
+  });
 
   return res.json({
     success: true,

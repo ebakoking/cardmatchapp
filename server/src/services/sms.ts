@@ -1,19 +1,16 @@
 /**
- * SMS Service - Netgsm Entegrasyonu
+ * SMS Service - Twilio Verify Entegrasyonu
  * 
  * Kurulum:
- * 1. https://www.netgsm.com.tr adresinden hesap aç
- * 2. API kullanıcı adı ve şifre al
- * 3. Gönderici adı (başlık) oluştur (örn: "CARDMATCH")
- * 4. .env dosyasına ekle:
- *    NETGSM_USERCODE=xxx
- *    NETGSM_PASSWORD=xxx
- *    NETGSM_HEADER=CARDMATCH
+ * 1. https://www.twilio.com adresinden hesap aç
+ * 2. Verify Service oluştur
+ * 3. .env dosyasına ekle:
+ *    TWILIO_ACCOUNT_SID=ACxxx
+ *    TWILIO_AUTH_TOKEN=xxx
+ *    TWILIO_VERIFY_SERVICE_SID=VAxxx
  */
 
 import axios from 'axios';
-
-const NETGSM_API_URL = 'https://api.netgsm.com.tr/sms/send/get';
 
 interface SmsResult {
   success: boolean;
@@ -21,103 +18,126 @@ interface SmsResult {
   error?: string;
 }
 
+interface VerifyResult {
+  success: boolean;
+  status?: string;
+  error?: string;
+}
+
+const getTwilioAuth = () => {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  return {
+    accountSid,
+    authToken,
+    auth: accountSid && authToken ? {
+      username: accountSid,
+      password: authToken
+    } : null
+  };
+};
+
 /**
- * Netgsm ile SMS gönder
+ * Twilio Verify ile OTP gönder
  */
-export async function sendSms(phoneNumber: string, message: string): Promise<SmsResult> {
-  const usercode = process.env.NETGSM_USERCODE;
-  const password = process.env.NETGSM_PASSWORD;
-  const header = process.env.NETGSM_HEADER || 'CARDMATCH';
+export async function sendOtpSms(phoneNumber: string, _code?: string): Promise<SmsResult> {
+  const { accountSid, auth } = getTwilioAuth();
+  const serviceSid = process.env.TWILIO_VERIFY_SERVICE_SID;
 
-  // Development modunda gerçek SMS gönderme
-  if (process.env.NODE_ENV !== 'production') {
-    console.log(`[SMS-DEV] To: ${phoneNumber}, Message: ${message}`);
-    return { success: true, messageId: 'dev-' + Date.now() };
-  }
-
-  // Production'da API key kontrolü
-  if (!usercode || !password) {
-    console.error('[SMS] Netgsm credentials not configured');
+  // Test modu: Twilio yapılandırılmamışsa
+  if (!accountSid || !serviceSid) {
+    console.log(`[SMS] Twilio not configured, test mode active`);
     return { success: false, error: 'SMS servisi yapılandırılmamış' };
   }
 
   try {
-    // Telefon numarasını formatla (başındaki + ve 0'ları kaldır)
-    const formattedPhone = phoneNumber.replace(/^\+/, '').replace(/^0/, '');
-    
-    const response = await axios.get(NETGSM_API_URL, {
-      params: {
-        usercode,
-        password,
-        gsmno: formattedPhone,
-        message,
-        msgheader: header,
-        filter: 0, // Filtreleme kapalı
-        startdate: '', // Hemen gönder
-        stopdate: '',
-      },
-      timeout: 10000,
-    });
-
-    const result = response.data.toString().trim();
-    
-    // Netgsm yanıt kodları
-    // 00: Başarılı
-    // 20: Mesaj metninde hata
-    // 30: Geçersiz kullanıcı adı/şifre
-    // 40: Gönderici adı sistemde tanımlı değil
-    // 50: Bilinmeyen arama hatası
-    // 60: Arama parametrelerinde hata
-    // 70: Tanımlı olmayan hata
-    
-    if (result.startsWith('00')) {
-      const messageId = result.split(' ')[1] || result;
-      console.log(`[SMS] Sent successfully to ${formattedPhone}, ID: ${messageId}`);
-      return { success: true, messageId };
-    } else {
-      console.error(`[SMS] Failed: ${result}`);
-      return { success: false, error: `Netgsm error: ${result}` };
+    // Telefon numarasını E.164 formatına çevir
+    let formattedPhone = phoneNumber;
+    if (!formattedPhone.startsWith('+')) {
+      formattedPhone = '+' + formattedPhone;
     }
+
+    console.log(`[SMS] Sending verification to ${formattedPhone}`);
+
+    const response = await axios.post(
+      `https://verify.twilio.com/v2/Services/${serviceSid}/Verifications`,
+      new URLSearchParams({
+        To: formattedPhone,
+        Channel: 'sms'
+      }),
+      {
+        auth,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        timeout: 15000
+      }
+    );
+
+    console.log(`[SMS] Verification sent, status: ${response.data.status}`);
+    return { success: true, messageId: response.data.sid };
   } catch (error: any) {
-    console.error('[SMS] Error:', error.message);
-    return { success: false, error: error.message };
+    const errorMessage = error.response?.data?.message || error.message;
+    console.error('[SMS] Twilio error:', errorMessage);
+    return { success: false, error: errorMessage };
   }
 }
 
 /**
- * OTP SMS gönder
+ * Twilio Verify ile OTP doğrula
  */
-export async function sendOtpSms(phoneNumber: string, code: string): Promise<SmsResult> {
-  const message = `CardMatch doğrulama kodunuz: ${code}\n\nBu kodu kimseyle paylaşmayın.`;
-  return sendSms(phoneNumber, message);
-}
+export async function verifyOtpCode(phoneNumber: string, code: string): Promise<VerifyResult> {
+  const { accountSid, auth } = getTwilioAuth();
+  const serviceSid = process.env.TWILIO_VERIFY_SERVICE_SID;
 
-/**
- * SMS bakiye sorgula
- */
-export async function checkSmsBalance(): Promise<{ success: boolean; balance?: number; error?: string }> {
-  const usercode = process.env.NETGSM_USERCODE;
-  const password = process.env.NETGSM_PASSWORD;
-
-  if (!usercode || !password) {
-    return { success: false, error: 'Credentials not configured' };
+  if (!accountSid || !serviceSid) {
+    console.log(`[SMS] Twilio not configured, skipping verification`);
+    return { success: false, error: 'SMS servisi yapılandırılmamış' };
   }
 
   try {
-    const response = await axios.get('https://api.netgsm.com.tr/balance/list/get', {
-      params: { usercode, password },
-      timeout: 5000,
-    });
-
-    const result = response.data.toString().trim();
-    const balance = parseFloat(result);
-    
-    if (!isNaN(balance)) {
-      return { success: true, balance };
+    // Telefon numarasını E.164 formatına çevir
+    let formattedPhone = phoneNumber;
+    if (!formattedPhone.startsWith('+')) {
+      formattedPhone = '+' + formattedPhone;
     }
-    
-    return { success: false, error: result };
+
+    console.log(`[SMS] Verifying code for ${formattedPhone}`);
+
+    const response = await axios.post(
+      `https://verify.twilio.com/v2/Services/${serviceSid}/VerificationCheck`,
+      new URLSearchParams({
+        To: formattedPhone,
+        Code: code
+      }),
+      {
+        auth,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        timeout: 10000
+      }
+    );
+
+    const status = response.data.status;
+    console.log(`[SMS] Verification check status: ${status}`);
+
+    if (status === 'approved') {
+      return { success: true, status };
+    } else {
+      return { success: false, status, error: 'Kod geçersiz veya süresi dolmuş' };
+    }
   } catch (error: any) {
-    return { success: false, error: error.message };
+    const errorMessage = error.response?.data?.message || error.message;
+    console.error('[SMS] Twilio verify error:', errorMessage);
+    return { success: false, error: errorMessage };
   }
+}
+
+/**
+ * Eski sendSms fonksiyonu (geriye uyumluluk için)
+ */
+export async function sendSms(phoneNumber: string, message: string): Promise<SmsResult> {
+  console.log(`[SMS] sendSms called but using Verify service. Message: ${message}`);
+  return sendOtpSms(phoneNumber);
 }

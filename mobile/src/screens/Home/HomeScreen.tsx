@@ -69,7 +69,7 @@ const PRIME_PACKAGES = [
 type Props = NativeStackScreenProps<ChatStackParamList, 'HomeMain'>;
 
 const HomeScreen: React.FC<Props> = ({ navigation }) => {
-  const { user, updateUser } = useAuth();
+  const { user, updateUser, refreshProfile } = useAuth();
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const boostGlowAnim = useRef(new Animated.Value(0.3)).current;
   

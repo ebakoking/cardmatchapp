@@ -10,20 +10,21 @@ import { verifyJwt } from '../utils/jwt';
 import { saveVerificationVideo } from '../services/verification';
 import { emitToUser } from '../socket/io';
 import { sendVerificationEmail } from '../services/email';
+import { uploadImage, isCloudinaryConfigured } from '../services/cloudinary';
 
 // Geçici email doğrulama kodları (production'da Redis kullanılmalı)
 const emailVerificationCodes: Map<string, { code: string; newEmail: string; expiresAt: Date }> = new Map();
 
 const router = Router();
 
-// Uploads klasörünü oluştur
+// Uploads klasörünü oluştur (fallback için)
 const uploadsDir = path.join(__dirname, '../../uploads/profile-photos');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-// Multer disk storage config - fotoğrafları gerçekten kaydet
-const storage = multer.diskStorage({
+// Multer disk storage config
+const diskStorage = multer.diskStorage({
   destination: (_req, _file, cb) => {
     cb(null, uploadsDir);
   },
@@ -34,8 +35,11 @@ const storage = multer.diskStorage({
   },
 });
 
+// Multer memory storage (Cloudinary için)
+const memoryStorage = multer.memoryStorage();
+
 const upload = multer({
-  storage,
+  storage: isCloudinaryConfigured() ? memoryStorage : diskStorage,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
   fileFilter: (_req, file, cb) => {
     if (file.mimetype.startsWith('image/')) {
@@ -325,14 +329,29 @@ router.post(
       where: { userId, type: photoType } 
     });
 
-    // Dosya kaydedildi, URL'i oluştur
-    const url = `/uploads/profile-photos/${req.file.filename}`;
+    // Fotoğrafı yükle (Cloudinary veya local)
+    let url: string;
     
-    console.log('[PhotoUpload] File saved:', {
-      filename: req.file.filename,
-      path: req.file.path,
-      url,
-    });
+    if (isCloudinaryConfigured() && req.file.buffer) {
+      // Cloudinary'e yükle
+      const uploadResult = await uploadImage(req.file.buffer, `cardmatch/profiles/${userId}`);
+      if (!uploadResult.success) {
+        return res.status(500).json({
+          success: false,
+          error: { code: 'UPLOAD_FAILED', message: uploadResult.error || 'Fotoğraf yüklenemedi' },
+        });
+      }
+      url = uploadResult.url!;
+      console.log('[PhotoUpload] Cloudinary upload:', { url });
+    } else {
+      // Local dosya
+      url = `/uploads/profile-photos/${(req.file as any).filename}`;
+      console.log('[PhotoUpload] Local file saved:', {
+        filename: (req.file as any).filename,
+        path: (req.file as any).path,
+        url,
+      });
+    }
     
     // Caption from form data (optional, max 80 chars)
     const caption = req.body.caption?.slice(0, 80) || null;
