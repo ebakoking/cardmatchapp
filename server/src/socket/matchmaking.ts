@@ -14,6 +14,7 @@ interface QueueEntry {
   filterMaxAge?: number;
   filterMaxDistance?: number;
   filterGender?: string; // MALE, FEMALE, BOTH
+  preferHighSpark?: boolean; // Prime: en yüksek sparklı kişilerle eşleş
   age?: number;
   gender?: string; // Kullanıcının kendi cinsiyeti
   // Boost sistemi
@@ -112,13 +113,17 @@ function canMatchWithFilters(
 
   // User1 Prime ise kendi filtreleriyle kontrol et
   if (user1.isPrime) {
-    // Yaş kontrolü
+    // Yaş kontrolü (maxAge 40 = "40+", üst sınır yok)
     const minAge = user1.filterMinAge ?? 18;
     const maxAge = user1.filterMaxAge ?? 99;
     
-    if (user2.age) {
-      if (user2.age < minAge || user2.age > maxAge) {
-        console.log(`[Filter] BLOCKED - Age mismatch: user2.age=${user2.age} not in range ${minAge}-${maxAge}`);
+    if (user2.age != null) {
+      if (user2.age < minAge) {
+        console.log(`[Filter] BLOCKED - Age mismatch: user2.age=${user2.age} < minAge ${minAge}`);
+        return false;
+      }
+      if (maxAge !== 40 && user2.age > maxAge) {
+        console.log(`[Filter] BLOCKED - Age mismatch: user2.age=${user2.age} > maxAge ${maxAge}`);
         return false;
       }
     }
@@ -151,13 +156,17 @@ function canMatchWithFilters(
 
   // User2 Prime ise kendi filtreleriyle kontrol et
   if (user2.isPrime) {
-    // Yaş kontrolü
+    // Yaş kontrolü (maxAge 40 = "40+", üst sınır yok)
     const minAge = user2.filterMinAge ?? 18;
     const maxAge = user2.filterMaxAge ?? 99;
     
-    if (user1.age) {
-      if (user1.age < minAge || user1.age > maxAge) {
-        console.log(`[Filter] BLOCKED - Age mismatch: user1.age=${user1.age} not in range ${minAge}-${maxAge}`);
+    if (user1.age != null) {
+      if (user1.age < minAge) {
+        console.log(`[Filter] BLOCKED - Age mismatch: user1.age=${user1.age} < minAge ${minAge}`);
+        return false;
+      }
+      if (maxAge !== 40 && user1.age > maxAge) {
+        console.log(`[Filter] BLOCKED - Age mismatch: user1.age=${user1.age} > maxAge ${maxAge}`);
         return false;
       }
     }
@@ -312,6 +321,16 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
           });
         }
 
+        // Kadın/Erkek tercihi 30 dk geçerli; süre dolmuşsa efektif BOTH
+        const rawGender = (user as any).filterGender || 'BOTH';
+        const genderExpiresAt = (user as any).filterGenderExpiresAt;
+        const effectiveFilterGender =
+          (rawGender === 'MALE' || rawGender === 'FEMALE') &&
+          genderExpiresAt &&
+          new Date(genderExpiresAt) > new Date()
+            ? rawGender
+            : 'BOTH';
+
         // Queue entry oluştur - filtre değerlerini logla
         const queueEntry: QueueEntry = {
           userId,
@@ -325,7 +344,8 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
           filterMinAge: user.filterMinAge,
           filterMaxAge: user.filterMaxAge,
           filterMaxDistance: user.filterMaxDistance,
-          filterGender: (user as any).filterGender || 'BOTH', // Prisma tipi henüz güncellenmemiş olabilir
+          filterGender: effectiveFilterGender,
+          preferHighSpark: (user as any).preferHighSpark ?? false,
           age: user.age,
           gender: user.gender,
           // Boost sistemi
@@ -929,24 +949,15 @@ async function tryMatch(io: Server) {
 
   // Normal eşleştirme algoritması
   for (let i = 0; i < matchmakingQueue.length; i++) {
+    const a = matchmakingQueue[i];
+    const candidates: { entry: QueueEntry; user: any }[] = [];
+
     for (let j = i + 1; j < matchmakingQueue.length; j++) {
-      const a = matchmakingQueue[i];
       const b = matchmakingQueue[j];
-
-      console.log(`[Matchmaking] Checking pair: ${a.userId} <-> ${b.userId}`);
-
       const userA = await prisma.user.findUnique({ where: { id: a.userId } });
       const userB = await prisma.user.findUnique({ where: { id: b.userId } });
-      if (!userA || !userB) {
-        console.log('[Matchmaking] User not found in DB, skipping pair');
-        continue;
-      }
+      if (!userA || !userB || userA.id === userB.id) continue;
 
-      // Geliştirme aşaması için eşleştirme kurallarını MINIMUM'a indiriyoruz.
-      // Prod'da: verified, status, block, 7 gün history, gender match, plus filtreleri tekrar açılmalı.
-      if (userA.id === userB.id) continue;
-
-      // Block kontrolü - engellenen kullanıcılarla eşleşme
       const blockExists = await prisma.block.findFirst({
         where: {
           OR: [
@@ -955,21 +966,26 @@ async function tryMatch(io: Server) {
           ],
         },
       });
-      if (blockExists) {
-        console.log(`[Matchmaking] Block exists between ${userA.nickname} and ${userB.nickname}`);
-        continue;
-      }
+      if (blockExists) continue;
+      if (!canMatchWithFilters(a, b)) continue;
 
-      // Prime filtre kontrolü
-      if (!canMatchWithFilters(a, b)) {
-        console.log(`[Matchmaking] Filter mismatch: ${userA.nickname} <-> ${userB.nickname}`);
-        continue;
-      }
-
-      // Normal eşleşme bulundu - createMatch helper'ı kullan
-      await createMatch(io, a, b, userA, userB);
-      return;
+      candidates.push({ entry: b, user: userB });
     }
+
+    if (candidates.length === 0) continue;
+
+    // Prime "en yüksek sparklı eşleş" açıksa adayları spark'a göre sırala
+    let chosen = candidates[0];
+    if (a.preferHighSpark && candidates.length > 1) {
+      candidates.sort((x, y) => (y.entry.totalSparksEarned ?? 0) - (x.entry.totalSparksEarned ?? 0));
+      chosen = candidates[0];
+      console.log(`[Matchmaking] preferHighSpark: ${a.userId} matched with highest-spark candidate ${chosen.entry.userId} (${chosen.entry.totalSparksEarned ?? 0} spark)`);
+    }
+
+    const userA = await prisma.user.findUnique({ where: { id: a.userId } });
+    if (!userA) continue;
+    await createMatch(io, a, chosen.entry, userA, chosen.user);
+    return;
   }
   
   console.log('[Matchmaking] No match found in this round');

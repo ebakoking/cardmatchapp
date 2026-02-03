@@ -147,7 +147,9 @@ model User {
   filterMinAge           Int           @default(18)
   filterMaxAge           Int           @default(99)
   filterMaxDistance      Int           @default(160)  // km cinsinden
-  filterGender           String        @default("BOTH") // MALE, FEMALE, BOTH - Prime üyeler için cinsiyet filtresi
+  filterGender           String        @default("BOTH") // MALE, FEMALE, BOTH - 50 elmas ile Kadın/Erkek, 30 dk geçerli
+  filterGenderExpiresAt  DateTime?                        // Kadın/Erkek tercihi bitiş (30 dk)
+  preferHighSpark        Boolean       @default(false)  // Prime: en yüksek sparklı kişilerle eşleş (aç/kapa)
   tokenBalance           Int           @default(0)
   monthlyTokensReceived  Int           @default(0)  // Hediye olarak aldığı tokenlar
   monthlyTokensEarned    Int           @default(0)  // Hediye olarak kazandığı tokenlar

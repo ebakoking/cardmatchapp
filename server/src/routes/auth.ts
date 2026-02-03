@@ -757,7 +757,7 @@ router.get('/me', async (req, res) => {
         error: { code: 'USER_NOT_FOUND', message: 'Kullanıcı bulunamadı.' },
       });
     }
-    
+
     // Frozen hesap kontrolü
     if (user.status === 'FROZEN') {
       return res.status(403).json({
@@ -765,12 +765,33 @@ router.get('/me', async (req, res) => {
         error: { code: 'ACCOUNT_FROZEN', message: 'Hesabın dondurulmuş. Tekrar giriş yaparak aktifleştirebilirsin.' },
       });
     }
-    
+
     // Banned hesap kontrolü
     if (user.status === 'BANNED') {
       return res.status(403).json({
         success: false,
         error: { code: 'ACCOUNT_BANNED', message: 'Bu hesap askıya alınmış.' },
+      });
+    }
+
+    // Kadın/Erkek tercihi süresi dolmuşsa BOTH yap (ilk girişte Herkes kalır)
+    const u = user as any;
+    if ((u.filterGender === 'MALE' || u.filterGender === 'FEMALE') && (!u.filterGenderExpiresAt || new Date(u.filterGenderExpiresAt) <= new Date())) {
+      const updated = await prisma.user.update({
+        where: { id: decoded.userId },
+        data: { filterGender: 'BOTH', filterGenderExpiresAt: null },
+        include: {
+          profilePhotos: { orderBy: { order: 'asc' } },
+        },
+      });
+      return res.json({
+        success: true,
+        data: {
+          user: sanitizeUser(updated),
+          isProfileComplete: updated.profileComplete || isProfileComplete(updated),
+          onboardingStep: updated.onboardingStep || 1,
+          status: updated.status,
+        },
       });
     }
     

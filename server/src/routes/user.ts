@@ -50,6 +50,20 @@ const upload = multer({
   },
 });
 
+// Profil fotoğrafı: React Native bazen mimetype göndermez veya application/octet-stream gönderir
+const uploadProfilePhoto = multer({
+  storage: isCloudinaryConfigured() ? memoryStorage : diskStorage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const mt = file.mimetype || '';
+    if (mt.startsWith('image/') || mt === '' || mt === 'application/octet-stream') {
+      cb(null, true);
+    } else {
+      cb(new Error('Sadece görsel dosyalar kabul edilir'));
+    }
+  },
+});
+
 function authMiddleware(req: any, res: any, next: any) {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {
@@ -83,10 +97,11 @@ const updateProfileSchema = z.object({
   avatarId: z.number().int().min(1).max(8).optional(),
   interests: z.array(z.string().max(30)).max(10).optional(),
   // Prime filtre ayarları
-  filterMinAge: z.number().int().min(18).max(99).optional(),
-  filterMaxAge: z.number().int().min(18).max(99).optional(),
+  filterMinAge: z.number().int().min(18).max(40).optional(),
+  filterMaxAge: z.number().int().min(18).max(40).optional(), // 40 = "40+"
   filterMaxDistance: z.number().int().min(0).max(500).optional(),
   filterGender: z.enum(['MALE', 'FEMALE', 'OTHER', 'BOTH']).optional(),
+  preferHighSpark: z.boolean().optional(), // Prime: en yüksek sparklı kişilerle eşleş
   // Profil kurulum alanları
   birthDate: z.string().optional(),
   latitude: z.number().optional(),
@@ -132,11 +147,21 @@ router.get('/check-nickname', authMiddleware, async (req: any, res) => {
 });
 
 router.get('/me', authMiddleware, async (req: any, res) => {
-  const user = await prisma.user.findUnique({
+  let user = await prisma.user.findUnique({
     where: { id: req.user.userId },
     include: { profilePhotos: true },
   });
+  if (!user) return res.status(404).json({ success: false, error: { code: 'USER_NOT_FOUND', message: 'Kullanıcı bulunamadı.' } });
 
+  // Kadın/Erkek tercihi süresi dolmuşsa BOTH yap
+  const u = user as any;
+  if ((u.filterGender === 'MALE' || u.filterGender === 'FEMALE') && u.filterGenderExpiresAt && new Date(u.filterGenderExpiresAt) <= new Date()) {
+    user = await prisma.user.update({
+      where: { id: req.user.userId },
+      data: { filterGender: 'BOTH', filterGenderExpiresAt: null },
+      include: { profilePhotos: true },
+    });
+  }
   return res.json({ success: true, data: user });
 });
 
@@ -172,16 +197,63 @@ router.put(
 
     // birthDate string'i Date'e çevir
     const updateData: any = { ...data };
+    delete updateData.tokenBalance; // client göndermesin
     if (data.birthDate) {
       updateData.birthDate = new Date(data.birthDate);
     }
 
+    const userId = req.user.userId;
+    const currentUser = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { filterGender: true, tokenBalance: true },
+    });
+    if (!currentUser) {
+      return res.status(404).json({ success: false, error: { code: 'USER_NOT_FOUND', message: 'Kullanıcı bulunamadı.' } });
+    }
+
+    // Cinsiyet filtresi MALE/FEMALE = 50 elmas, 30 dk geçerli (mutlak bitiş zamanı; boost gibi uygulama kapalıyken de işler)
+    const GENDER_ELMAS_COST = 50;
+    const GENDER_DURATION_MINUTES = 30;
+    if (data.filterGender === 'MALE' || data.filterGender === 'FEMALE') {
+      const previousGender = currentUser.filterGender || 'BOTH';
+      if (previousGender !== data.filterGender) {
+        if (currentUser.tokenBalance < GENDER_ELMAS_COST) {
+          return res.status(402).json({
+            success: false,
+            error: {
+              code: 'INSUFFICIENT_TOKENS',
+              message: 'Kadın veya Erkek tercihi için 50 elmas gerekiyor.',
+              required: GENDER_ELMAS_COST,
+              current: currentUser.tokenBalance,
+            },
+          });
+        }
+        await prisma.user.update({
+          where: { id: userId },
+          data: { tokenBalance: { decrement: GENDER_ELMAS_COST } },
+        });
+        updateData.filterGenderExpiresAt = new Date(Date.now() + GENDER_DURATION_MINUTES * 60 * 1000);
+      }
+    } else if (data.filterGender === 'BOTH' || data.filterGender === 'OTHER') {
+      updateData.filterGenderExpiresAt = null;
+    }
+
     const user = await prisma.user.update({
-      where: { id: req.user.userId },
+      where: { id: userId },
       data: updateData,
     });
 
-    return res.json({ success: true, data: user });
+    // Kadın/Erkek süresi dolmuşsa efektif olarak BOTH dön (ve DB'yi güncelle)
+    let responseUser = user as any;
+    if ((responseUser.filterGender === 'MALE' || responseUser.filterGender === 'FEMALE') && responseUser.filterGenderExpiresAt) {
+      if (new Date(responseUser.filterGenderExpiresAt) <= new Date()) {
+        responseUser = await prisma.user.update({
+          where: { id: userId },
+          data: { filterGender: 'BOTH', filterGenderExpiresAt: null },
+        });
+      }
+    }
+    return res.json({ success: true, data: responseUser });
   },
 );
 
@@ -424,11 +496,11 @@ router.patch('/me/photos/:photoId/caption', authMiddleware, async (req: any, res
 });
 
 // ============ PROFİL FOTOĞRAFI (Prime) ============
-// Prime kullanıcılar için özel profil fotoğrafı yükleme
+// Prime kullanıcılar için özel profil fotoğrafı yükleme (Cloudinary veya local)
 router.post(
   '/me/profile-photo',
   authMiddleware,
-  upload.single('photo'),
+  uploadProfilePhoto.single('photo'),
   async (req: any, res) => {
     const userId = req.user.userId;
     
@@ -448,16 +520,27 @@ router.post(
       });
     }
 
-    // Dosya URL'i
-    const profilePhotoUrl = `/uploads/profile-photos/${req.file.filename}`;
+    // Cloudinary varsa oraya yükle (tam URL döner, siyah ekran önlenir)
+    let profilePhotoUrl: string;
+    if (isCloudinaryConfigured() && req.file.buffer) {
+      const uploadResult = await uploadImage(req.file.buffer, `cardmatch/profiles/${userId}`);
+      if (!uploadResult.success) {
+        return res.status(500).json({
+          success: false,
+          error: { code: 'UPLOAD_FAILED', message: uploadResult.error || 'Fotoğraf yüklenemedi' },
+        });
+      }
+      profilePhotoUrl = uploadResult.url!;
+      console.log('[ProfilePhoto] Cloudinary upload:', { url: profilePhotoUrl });
+    } else {
+      profilePhotoUrl = `/uploads/profile-photos/${(req.file as any).filename}`;
+      console.log('[ProfilePhoto] Local file:', { profilePhotoUrl });
+    }
 
-    // Kullanıcının profil fotoğrafını güncelle
     await prisma.user.update({
       where: { id: userId },
       data: { profilePhotoUrl },
     });
-
-    console.log('[ProfilePhoto] Uploaded for Prime user:', { userId, profilePhotoUrl });
 
     return res.json({
       success: true,
