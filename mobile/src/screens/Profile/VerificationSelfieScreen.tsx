@@ -139,7 +139,6 @@ const VerificationSelfieScreen: React.FC<Props> = ({ navigation }) => {
       });
 
       const uploadRes = await api.post('/api/upload/photo', form, {
-        headers: { 'Content-Type': 'multipart/form-data' },
       });
 
       if (!uploadRes.data.success || !uploadRes.data.url) {

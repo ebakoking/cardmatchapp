@@ -25,9 +25,9 @@ const TokenPurchaseScreen: React.FC = () => {
   return (
     <View style={styles.container}>
       <View style={styles.card}>
-        <Text style={FONTS.h2}>100 Elmas</Text>
+        <Text style={FONTS.h2}>Elmas Satın Al</Text>
         <Text style={[FONTS.h3, { marginTop: SPACING.sm }]}>
-          129.90 TL
+          50: 49,99 TL · 100: 79,99 TL · 250: 149,99 TL
         </Text>
 
         <View style={styles.benefits}>

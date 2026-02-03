@@ -11,9 +11,55 @@ if (!apiUrl) {
   console.error('❌ API_URL tanımlı değil! .env dosyasını kontrol edin.');
 }
 
-export const api = axios.create({
+const MAX_CONCURRENT_REQUESTS = 10;
+let activeRequests = 0;
+const requestQueue: Array<() => void> = [];
+
+function runWhenAllowed<T>(fn: () => Promise<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const run = async () => {
+      activeRequests++;
+      try {
+        const result = await fn();
+        resolve(result);
+      } catch (e) {
+        reject(e);
+      } finally {
+        activeRequests--;
+        if (requestQueue.length > 0 && activeRequests < MAX_CONCURRENT_REQUESTS) {
+          const next = requestQueue.shift();
+          if (next) next();
+        }
+      }
+    };
+    if (activeRequests < MAX_CONCURRENT_REQUESTS) {
+      run();
+    } else {
+      requestQueue.push(run);
+    }
+  });
+}
+
+const axiosInstance = axios.create({
   baseURL: apiUrl || '',
 });
+
+export const api = {
+  get: <T = unknown>(url: string, config?: Parameters<typeof axiosInstance.get>[1]) =>
+    runWhenAllowed(() => axiosInstance.get<T>(url, config)),
+  post: <T = unknown>(url: string, data?: unknown, config?: Parameters<typeof axiosInstance.post>[2]) =>
+    runWhenAllowed(() => axiosInstance.post<T>(url, data, config)),
+  put: <T = unknown>(url: string, data?: unknown, config?: Parameters<typeof axiosInstance.put>[2]) =>
+    runWhenAllowed(() => axiosInstance.put<T>(url, data, config)),
+  patch: <T = unknown>(url: string, data?: unknown, config?: Parameters<typeof axiosInstance.patch>[2]) =>
+    runWhenAllowed(() => axiosInstance.patch<T>(url, data, config)),
+  delete: <T = unknown>(url: string, config?: Parameters<typeof axiosInstance.delete>[1]) =>
+    runWhenAllowed(() => axiosInstance.delete<T>(url, config)),
+  request: <T = unknown>(config: Parameters<typeof axiosInstance.request>[0]) =>
+    runWhenAllowed(() => axiosInstance.request<T>(config)),
+  interceptors: axiosInstance.interceptors,
+  defaults: axiosInstance.defaults,
+};
 
 // 🚨 DEBUG: /api/auth/me spam'ini tespit et
 let authMeCallCount = 0;
@@ -49,6 +95,10 @@ api.interceptors.request.use(async (config) => {
     }
   } catch (error) {
     console.log('Error getting token from SecureStore:', error);
+  }
+  // FormData ile yükleme: Content-Type'ı KALDIR ki runtime boundary ile ayarlasın (profil fotoğrafı vb.)
+  if (config.data instanceof FormData) {
+    delete (config.headers as any)['Content-Type'];
   }
   return config;
 });

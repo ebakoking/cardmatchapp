@@ -7,6 +7,9 @@ const { socketUrl } = (Constants.expoConfig?.extra || {}) as {
 
 let socket: Socket | null = null;
 let joinedUserId: string | null = null;
+let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+
+const HEARTBEAT_MS = 30000;
 
 export function getSocket() {
   if (!socket) {
@@ -15,9 +18,72 @@ export function getSocket() {
     }
     socket = io(socketUrl || '', {
       transports: ['websocket'],
+      timeout: 10000,
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+    });
+
+    // 🔒 MEMORY LEAK FIX: Connect event - rejoin user room
+    socket.on('connect', () => {
+      console.log('[Socket] ✅ Connected');
+
+      // Heartbeat restart
+      if (heartbeatInterval) clearInterval(heartbeatInterval);
+      heartbeatInterval = setInterval(() => {
+        if (socket?.connected) socket.emit('ping');
+      }, HEARTBEAT_MS);
+
+      // 🔒 RECONNECTION FIX: Rejoin user room if previously joined
+      if (joinedUserId) {
+        console.log('[Socket] 🔄 Reconnected - rejoining user room:', joinedUserId);
+        socket.emit('user:join', { userId: joinedUserId });
+      }
+    });
+
+    // Disconnect event - cleanup heartbeat only
+    socket.on('disconnect', (reason) => {
+      console.log('[Socket] ❌ Disconnected:', reason);
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+      }
+      // 🔒 MEMORY LEAK FIX: Listener'ları temizleme - sadece explicit disconnectSocket'te yapılmalı
+      // Network disconnect durumunda listener'lar kalmalı
+    });
+
+    // Reconnect attempt logging
+    socket.on('reconnect_attempt', (attempt) => {
+      console.log(`[Socket] 🔄 Reconnection attempt ${attempt}...`);
+    });
+
+    socket.on('reconnect_error', (error) => {
+      console.log('[Socket] ⚠️ Reconnection error:', error.message);
+    });
+
+    socket.on('reconnect_failed', () => {
+      console.log('[Socket] ❌ Reconnection failed');
     });
   }
   return socket;
+}
+
+/** Logout vb. için tüm listener'ları kaldırıp bağlantıyı keser. */
+export function disconnectSocket() {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+  }
+  if (joinedUserId) {
+    const s = socket;
+    if (s) s.emit('user:leave', { userId: joinedUserId });
+    joinedUserId = null;
+  }
+  if (socket) {
+    socket.removeAllListeners();
+    socket.disconnect();
+    socket = null;
+  }
 }
 
 // Kullanıcıyı kendi room'una katıl (kişisel event'leri almak için)

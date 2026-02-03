@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { 
   View, 
   Text, 
@@ -31,6 +31,8 @@ const MatchQueueScreen: React.FC<Props> = ({ navigation }) => {
   
   // Track if match was found - don't emit match:leave on successful match
   const matchFoundRef = useRef(false);
+  // Track if we're in queue - re-join on socket reconnect (server removes on disconnect)
+  const isInQueueRef = useRef(false);
   
   // Animations
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -99,64 +101,76 @@ const MatchQueueScreen: React.FC<Props> = ({ navigation }) => {
     return () => clearInterval(timer);
   }, []);
 
+  const handleMatchFound = useCallback((payload: {
+    matchId: string;
+    partnerNickname: string;
+    partnerAvatarId?: number;
+    commonInterests?: string[];
+    isBoostMatch?: boolean;
+  }) => {
+    console.log('[MatchQueue] Match found:', payload);
+    matchFoundRef.current = true;
+    setSearching(false);
+    navigation.replace('CardGate', {
+      matchId: payload.matchId,
+      partnerNickname: payload.partnerNickname,
+      partnerAvatarId: payload.partnerAvatarId,
+      commonInterests: payload.commonInterests || [],
+      isBoostMatch: payload.isBoostMatch || false,
+    });
+  }, [navigation]);
+
+  const handleMatchBlocked = useCallback((data: { reason: string; message: string }) => {
+    console.log('[MatchQueue] Match blocked:', data);
+    setSearching(false);
+    let title = 'Eşleşme Engellendi';
+    let message = data?.message || 'Şu anda eşleşme yapamazsınız.';
+    if (data?.reason === 'DAILY_LIMIT') {
+      title = 'Günlük Limit';
+      message = 'Günlük sohbet limitinizi doldurdunuz. Prime üye olarak sınırsız sohbet başlatabilirsiniz!';
+    } else if (data?.reason === 'UNVERIFIED') {
+      title = 'Doğrulama Gerekli';
+      message = 'Profiliniz henüz onaylanmadı. Lütfen bekleyin.';
+    }
+    Alert.alert(title, message, [{ text: 'Tamam', onPress: () => navigation.goBack() }]);
+  }, [navigation]);
+
+  const handleMatchEnded = useCallback((payload: { reason: string; message?: string }) => {
+    console.log('[MatchQueue] match:ended received:', payload);
+  }, []);
+
   useEffect(() => {
     const socket = getSocket();
     if (!user) return;
 
+    const handleConnect = () => {
+      if (isInQueueRef.current) {
+        console.log('[MatchQueue] Reconnected - re-joining match queue');
+        socket.emit('match:join', { userId: user.id });
+      }
+    };
+
+    isInQueueRef.current = true;
     console.log('[MatchQueue] Joining queue with userId:', user.id);
     socket.emit('match:join', { userId: user.id });
 
-    socket.on('match:found', (payload: { 
-      matchId: string; 
-      partnerNickname: string; 
-      partnerAvatarId?: number;
-      commonInterests?: string[];
-      isBoostMatch?: boolean;
-    }) => {
-      console.log('[MatchQueue] Match found:', payload);
-      matchFoundRef.current = true;
-      setSearching(false);
-      navigation.replace('CardGate', { 
-        matchId: payload.matchId,
-        partnerNickname: payload.partnerNickname,
-        partnerAvatarId: payload.partnerAvatarId,
-        commonInterests: payload.commonInterests || [],
-        isBoostMatch: payload.isBoostMatch || false,
-      });
-    });
-
-    socket.on('match:blocked', (data: { reason: string; message: string }) => {
-      console.log('[MatchQueue] Match blocked:', data);
-      setSearching(false);
-      
-      let title = 'Eşleşme Engellendi';
-      let message = data?.message || 'Şu anda eşleşme yapamazsınız.';
-      
-      if (data?.reason === 'DAILY_LIMIT') {
-        title = 'Günlük Limit';
-        message = 'Günlük sohbet limitinizi doldurdunuz. Prime üye olarak sınırsız sohbet başlatabilirsiniz!';
-      } else if (data?.reason === 'UNVERIFIED') {
-        title = 'Doğrulama Gerekli';
-        message = 'Profiliniz henüz onaylanmadı. Lütfen bekleyin.';
-      }
-      
-      Alert.alert(title, message, [{ text: 'Tamam', onPress: () => navigation.goBack() }]);
-    });
-
-    socket.on('match:ended', (payload: { reason: string; message?: string }) => {
-      console.log('[MatchQueue] match:ended received:', payload);
-    });
+    socket.on('connect', handleConnect);
+    socket.on('match:found', handleMatchFound);
+    socket.on('match:blocked', handleMatchBlocked);
+    socket.on('match:ended', handleMatchEnded);
 
     return () => {
+      isInQueueRef.current = false;
       if (!matchFoundRef.current) {
         console.log('[MatchQueue] Leaving queue for userId:', user.id);
         socket.emit('match:leave', { userId: user.id });
       }
-      socket.off('match:found');
-      socket.off('match:blocked');
-      socket.off('match:ended');
+      socket.off('connect', handleConnect);
+      socket.off('match:found', handleMatchFound);
+      socket.off('match:blocked', handleMatchBlocked);
+      socket.off('match:ended', handleMatchEnded);
     };
-  }, [navigation, user]);
+  }, [user?.id, handleMatchFound, handleMatchBlocked, handleMatchEnded]);
 
   const cancel = () => {
     const socket = getSocket();

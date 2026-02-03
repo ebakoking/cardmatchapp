@@ -151,17 +151,18 @@ const MessageBubble: React.FC<Props> = ({
       const isViewable = isMine || isFirstFreeView || isUnlocked;
       // disabled = görüntülendi ise tıklanamaz
       const isDisabled = showViewed;
-      
+
       return (
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.mediaContainer}
           onPress={() => onMediaPress?.(message)}
           activeOpacity={isDisabled ? 1 : 0.8}
           disabled={isDisabled}
         >
-          {message.mediaUrl ? (
+          {/* 🎬 Video thumbnail varsa onu göster, yoksa video URL'yi fallback olarak kullan */}
+          {(message.thumbnailUrl || message.mediaUrl) ? (
             <Image
-              source={{ uri: message.mediaUrl }}
+              source={{ uri: message.thumbnailUrl || message.mediaUrl }}
               style={styles.blurMedia}
               blurRadius={showLock ? 50 : 0}
             />

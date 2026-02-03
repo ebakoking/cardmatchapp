@@ -44,7 +44,6 @@ import {
 import FriendsScreen from '../screens/Friends/FriendsScreen';
 import FriendChatScreen from '../screens/Friends/FriendChatScreen';
 import FriendProfileScreen from '../screens/Friends/FriendProfileScreen';
-import FriendCallScreen from '../screens/Friends/FriendCallScreen';
 import LeaderboardScreen from '../screens/Leaderboard/LeaderboardScreen';
 import SubscriptionScreen from '../screens/Subscription/SubscriptionScreen';
 import TokenPurchaseScreen from '../screens/Subscription/TokenPurchaseScreen';
@@ -102,15 +101,6 @@ export type FriendsStackParamList = {
   FriendProfile: {
     friendId: string;
     friendNickname: string;
-  };
-  FriendCall: {
-    friendshipId: string;
-    friendNickname: string;
-    friendPhoto?: string;
-    friendAvatarId?: number;
-    friendId: string;
-    callType: 'voice' | 'video';
-    isIncoming: boolean;
   };
 };
 
@@ -171,7 +161,6 @@ function FriendsStackNavigator() {
       <FriendsStack.Screen name="FriendsList" component={FriendsScreen} />
       <FriendsStack.Screen name="FriendChat" component={FriendChatScreen} />
       <FriendsStack.Screen name="FriendProfile" component={FriendProfileScreen} />
-      <FriendsStack.Screen name="FriendCall" component={FriendCallScreen} />
     </FriendsStack.Navigator>
   );
 }

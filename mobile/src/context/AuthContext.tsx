@@ -3,7 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import * as Notifications from 'expo-notifications';
 import { api, resetAuthMeThrottle } from '../services/api';
-import { getSocket, joinUserRoom, leaveUserRoom } from '../services/socket';
+import { getSocket, joinUserRoom, leaveUserRoom, disconnectSocket } from '../services/socket';
 import { registerPushToken } from '../services/notifications';
 
 // ============ USER INTERFACE ============
@@ -30,6 +30,7 @@ export interface User {
   filterMinAge?: number;
   filterMaxAge?: number;
   filterMaxDistance?: number;
+  preferHighSpark?: boolean;
   tokenBalance: number;
   monthlyTokensEarned: number;
   totalTokensEarned: number;
@@ -56,9 +57,16 @@ interface AuthContextValue {
   refreshProfile: () => Promise<void>;
   refreshAccessToken: () => Promise<boolean>;
   completeOnboarding: () => Promise<void>;
+  /** Sadece server yanıtından gelen bakiye ile çağrılmalı (client manipülasyonu önleme). */
   updateTokenBalance: (newBalance: number) => void;
   addTokens: (amount: number) => void;
   deductTokens: (amount: number) => void;
+  /** Server'dan bakiye çekip senkronize eder (refreshProfile + instantBalance günceller). */
+  refreshTokenBalance: () => Promise<void>;
+  /** Aynı işlemin çift gönderilmesini önler; fn server yanıtına göre updateTokenBalance çağırmalı. */
+  runWithSpendLock: <T>(operationKey: string, fn: () => Promise<T>) => Promise<T>;
+  /** PUT /api/user/me vb. yanıtından gelen user alanlarını state'e yazar (cinsiyet filtresi sayacı için) */
+  mergeUserFromApi: (partial: Partial<User>) => void;
 }
 
 // ============ STORAGE KEYS ============
@@ -99,8 +107,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const refreshCallCount = useRef(0); // Debug: kaç kez çağrıldı
   
   // ============ BALANCE PROTECTION SYSTEM ============
-  // Balance değişikliklerini track etmek için rev (version) sistemi
   const balanceRevRef = useRef<number>(0);
+  /** Aynı anda aynı işlemin çift gönderilmesini önler (race condition). */
+  const pendingSpendOperations = useRef<Set<string>>(new Set());
   
   // ============ setUserSafe - TÜM USER YAZMALARI BURADAN GEÇER ============
   // preserveBalance: true = balance değerleri korunur (default)
@@ -403,48 +412,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     };
     
-    // 📞 Gelen arama bildirimi
-    const handleIncomingCall = async (payload: { 
-      fromUserId: string; 
-      fromNickname: string; 
-      fromPhoto?: string;
-      callType: 'voice' | 'video';
-      friendshipId: string;
-      toUserId?: string;
-    }) => {
-      console.log('[AuthContext] 📞 Incoming call:', payload);
-      
-      // 🚨 Kendi aramam ise bildirimi gösterme!
-      if (payload.fromUserId === user?.id) {
-        console.log('[AuthContext] 📞 Ignoring - I am the caller');
-        return;
-      }
-      
-      // Local notification göster
-      try {
-        const callTypeText = payload.callType === 'video' ? '📹 Görüntülü' : '📞 Sesli';
-        await Notifications.scheduleNotificationAsync({
-          content: {
-            title: `${callTypeText} Arama`,
-            body: `${payload.fromNickname} sizi arıyor...`,
-            data: { 
-              type: 'incoming_call',
-              friendshipId: payload.friendshipId,
-              fromUserId: payload.fromUserId,
-              callType: payload.callType,
-            },
-            sound: 'default',
-          },
-          trigger: null, // Hemen göster
-        });
-      } catch (error) {
-        console.log('[AuthContext] Call notification error:', error);
-      }
-    };
-
     // Listeners ekle
     socket.on('friend:notification', handleFriendNotification);
-    socket.on('friend:call:incoming', handleIncomingCall);
     socket.on('friend:gift:received', handleGiftReceived);
     socket.on('friend:gift:sent', handleGiftSent);
     socket.on('gift:received', handleGiftReceived);
@@ -457,7 +426,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     return () => {
       socket.off('friend:notification', handleFriendNotification);
-      socket.off('friend:call:incoming', handleIncomingCall);
       socket.off('friend:gift:received', handleGiftReceived);
       socket.off('friend:gift:sent', handleGiftSent);
       socket.off('gift:received', handleGiftReceived);
@@ -547,7 +515,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     
     // Socket room'dan ayrıl (state update'lerden önce)
     leaveUserRoom();
-    
+    disconnectSocket();
+
     // Storage temizle (sync olmadan)
     SecureStore.deleteItemAsync(STORAGE_KEYS.ACCESS_TOKEN).catch(() => {});
     SecureStore.deleteItemAsync(STORAGE_KEYS.REFRESH_TOKEN).catch(() => {});
@@ -661,9 +630,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { ...prev, tokenBalance: newBalance };
     });
   }, []);
-  
-  // DEBUG: Kalan setUser çağrılarını yakala (olmamalı)
-  // Not: addTokens ve deductTokens direkt setUser kullanıyor çünkü balance hesaplama yapıyorlar
+
+  const mergeUserFromApi = useCallback((partial: Partial<User>) => {
+    if (!partial || Object.keys(partial).length === 0) return;
+    setUser((prev) => {
+      if (!prev) return null;
+      const next = { ...prev, ...partial };
+      if (typeof partial.tokenBalance === 'number') {
+        setInstantBalance(partial.tokenBalance);
+      }
+      return next;
+    });
+  }, []);
+
+  /** Server'dan bakiye çekip senkronize eder. */
+  const refreshTokenBalance = useCallback(async () => {
+    try {
+      const res = await api.get<{ success: boolean; data: { user: User } }>('/api/auth/me');
+      if (res.data?.success && res.data?.data?.user && !isLoggingOut.current) {
+        const balance = res.data.data.user.tokenBalance;
+        setInstantBalance(balance);
+        setUser((prev) => (prev ? { ...prev, tokenBalance: balance } : null));
+      }
+    } catch (e) {
+      console.error('[AuthContext] refreshTokenBalance failed:', e);
+    }
+  }, []);
+
+  /** Aynı işlemin çift gönderilmesini önler; fn içinde server'a istek atıp yanıtta updateTokenBalance çağır. */
+  const runWithSpendLock = useCallback(<T,>(operationKey: string, fn: () => Promise<T>): Promise<T> => {
+    if (pendingSpendOperations.current.has(operationKey)) {
+      return Promise.reject(new Error('Operation already in progress'));
+    }
+    pendingSpendOperations.current.add(operationKey);
+    return fn().finally(() => {
+      pendingSpendOperations.current.delete(operationKey);
+    });
+  }, []);
 
   return (
     <AuthContext.Provider
@@ -681,6 +684,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updateTokenBalance,
         addTokens,
         deductTokens,
+        refreshTokenBalance,
+        runWithSpendLock,
+        mergeUserFromApi,
       }}
     >
       {children}

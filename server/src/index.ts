@@ -22,7 +22,7 @@ import boostRouter from './routes/boost';
 import mediaRouter from './routes/media';
 import verificationRouter from './routes/verification';
 import dailyRewardRouter from './routes/dailyReward';
-import agoraRouter from './routes/agora';
+import genderFilterRouter from './routes/genderFilter';
 import { startCronJobs, runMonthlySparkReset, cleanupExpiredBoosts } from './jobs/monthlySparkReset';
 import { registerMatchmakingHandlers } from './socket/matchmaking';
 import { registerChatHandlers } from './socket/chat';
@@ -81,7 +81,7 @@ app.use('/api/boost', boostRouter);
 app.use('/api/media', mediaRouter);
 app.use('/api/verification', verificationRouter);
 app.use('/api/daily-reward', dailyRewardRouter);
-app.use('/api/agora', agoraRouter);
+app.use('/api/gender-filter', genderFilterRouter);
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });

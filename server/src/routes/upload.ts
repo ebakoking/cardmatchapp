@@ -3,7 +3,8 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
-import { uploadImage, uploadVideo, isCloudinaryConfigured } from '../services/cloudinary';
+import { uploadImage, uploadVideo, uploadVideoWithThumbnail, isCloudinaryConfigured } from '../services/cloudinary';
+import { generateVideoThumbnail, getVideoDuration } from '../services/videoThumbnail';
 
 const router = Router();
 
@@ -132,7 +133,7 @@ router.post('/photo', upload.single('photo'), async (req: Request, res: Response
   }
 });
 
-// POST /api/upload/video - Video yükle
+// POST /api/upload/video - Video yükle (🎬 Thumbnail ile)
 router.post('/video', upload.single('video'), async (req: Request, res: Response) => {
   try {
     if (!req.file) {
@@ -140,30 +141,59 @@ router.post('/video', upload.single('video'), async (req: Request, res: Response
     }
 
     let fileUrl: string;
+    let thumbnailUrl: string | undefined;
+    let duration: number | undefined;
 
     if (isCloudinaryConfigured() && req.file.buffer) {
-      // Cloudinary'e yükle
-      const result = await uploadVideo(req.file.buffer, 'cardmatch/videos');
+      // 🎬 Thumbnail generate et
+      console.log('[Upload] Generating video thumbnail...');
+      const thumbnailBuffer = await generateVideoThumbnail(req.file.buffer, 1);
+
+      // Duration al
+      try {
+        duration = await getVideoDuration(req.file.buffer);
+        console.log('[Upload] Video duration:', duration, 'seconds');
+      } catch (err) {
+        console.warn('[Upload] Could not get video duration:', err);
+      }
+
+      // Cloudinary'e video + thumbnail yükle
+      const result = await uploadVideoWithThumbnail(
+        req.file.buffer,
+        thumbnailBuffer,
+        'cardmatch/videos'
+      );
+
       if (!result.success) {
         return res.status(500).json({ error: result.error || 'Yükleme başarısız' });
       }
-      fileUrl = result.url!;
+
+      fileUrl = result.videoUrl!;
+      thumbnailUrl = result.thumbnailUrl;
+      duration = result.duration || duration;
+
+      console.log('[Upload] Video + Thumbnail uploaded:', {
+        video: fileUrl,
+        thumbnail: thumbnailUrl,
+        duration,
+      });
     } else {
-      // Local storage
+      // Local storage (sadece video, thumbnail generate yok)
       const baseUrl = process.env.BASE_URL || `http://${req.get('host')}`;
       fileUrl = `${baseUrl}/uploads/${(req.file as any).filename}`;
+      console.log('[Upload] Video uploaded (local, no thumbnail):', { url: fileUrl });
     }
-
-    console.log('[Upload] Video uploaded:', { url: fileUrl });
 
     return res.json({
       success: true,
       url: fileUrl,
+      thumbnailUrl, // 🎬 Thumbnail URL
+      duration,
       filename: req.file.originalname,
     });
   } catch (error) {
-    console.error('[Upload] Error:', error);
-    return res.status(500).json({ error: 'Dosya yüklenemedi' });
+    console.error('[Upload] Video upload error:', error);
+    return res.status(500).json({ error: 'Video yüklenemedi' });
   }
 });
 

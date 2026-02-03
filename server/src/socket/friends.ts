@@ -312,11 +312,12 @@ export function registerFriendsHandlers(io: Server, socket: Socket) {
       senderId: string;
       mediaType: 'audio' | 'photo' | 'video';
       mediaUrl: string;
+      thumbnailUrl?: string; // 🎬 Video thumbnail URL
       isInstant?: boolean;
       duration?: number;
     }) => {
       try {
-        const { friendshipId, senderId, mediaType, mediaUrl, isInstant, duration } = payload;
+        const { friendshipId, senderId, mediaType, mediaUrl, thumbnailUrl, isInstant, duration } = payload;
         console.log(`[Friends] Media: ${mediaType} from ${senderId}`);
 
         const friendship = await prisma.friendship.findUnique({
@@ -378,6 +379,7 @@ export function registerFriendsHandlers(io: Server, socket: Socket) {
             friendChatId: chat.id,
             senderId,
             mediaUrl,
+            thumbnailUrl, // 🎬 Thumbnail URL
             mediaType,
             locked,
             isFirstFree,
@@ -398,6 +400,7 @@ export function registerFriendsHandlers(io: Server, socket: Socket) {
           senderNickname: sender?.nickname || 'Birisi',
           content: null,
           mediaUrl: message.mediaUrl,
+          thumbnailUrl: message.thumbnailUrl, // 🎬 Thumbnail URL
           mediaType: message.mediaType,
           locked: message.locked,
           isFirstFree: message.isFirstFree,
@@ -679,84 +682,4 @@ export function registerFriendsHandlers(io: Server, socket: Socket) {
     },
   );
 
-  // ============ ARAMA BAŞLAT ============
-  socket.on(
-    'friend:call:start',
-    async (payload: {
-      fromUserId: string;
-      toUserId: string;
-      friendshipId: string;
-      callType: 'voice' | 'video';
-    }) => {
-      try {
-        const { fromUserId, toUserId, friendshipId, callType } = payload;
-        console.log(`[Friends] Call: ${callType} from ${fromUserId} to ${toUserId}`);
-
-        const caller = await prisma.user.findUnique({ 
-          where: { id: fromUserId },
-          select: { nickname: true, profilePhotoUrl: true, avatarId: true, isPrime: true },
-        });
-        if (!caller) return;
-
-        const callPayload = {
-          fromUserId,
-          fromNickname: caller.nickname,
-          fromPhoto: caller.isPrime ? caller.profilePhotoUrl : null,
-          fromAvatarId: caller.avatarId,
-          callType,
-          friendshipId,
-          toUserId, // Alıcı ID'si de ekle
-        };
-
-        // 🔔 SADECE alıcının userId room'una gönder (arayanın almaması için)
-        io.to(toUserId).emit('friend:call:incoming', callPayload);
-        
-        console.log(`[Friends] Call sent ONLY to user ${toUserId}, NOT to room`);
-      } catch (error) {
-        console.error('[Friends] Call start error:', error);
-      }
-    },
-  );
-
-  // ============ ARAMA KABUL ============
-  socket.on(
-    'friend:call:accept',
-    async (payload: { friendshipId: string; callType: 'voice' | 'video'; callerId?: string }) => {
-      const { friendshipId, callType, callerId } = payload;
-      console.log(`[Friends] Call accepted: ${friendshipId}, caller: ${callerId}`);
-      
-      // SADECE arayana bildir (çift bildirim önlemek için)
-      if (callerId) {
-        io.to(callerId).emit('friend:call:accepted', { friendshipId, callType });
-      }
-      // Room'a emit YAPMA - arayan zaten callerId üzerinden alıyor
-    },
-  );
-
-  // ============ ARAMA REDDET ============
-  socket.on(
-    'friend:call:reject',
-    async (payload: { friendshipId: string; callerId?: string }) => {
-      const { friendshipId, callerId } = payload;
-      console.log(`[Friends] Call rejected: ${friendshipId}, caller: ${callerId}`);
-      
-      // SADECE arayana bildir (çift bildirim önlemek için)
-      if (callerId) {
-        io.to(callerId).emit('friend:call:rejected', { friendshipId });
-      }
-      // Room'a emit YAPMA - arayan zaten callerId üzerinden alıyor
-    },
-  );
-
-  // ============ ARAMA SONLANDIR ============
-  socket.on(
-    'friend:call:end',
-    async (payload: { friendshipId: string; endedBy?: string }) => {
-      const { friendshipId, endedBy } = payload;
-      console.log(`[Friends] Call ended: ${friendshipId}, by: ${endedBy}`);
-      
-      const room = `friendchat:${friendshipId}`;
-      io.to(room).emit('friend:call:ended', { friendshipId, endedBy });
-    },
-  );
 }

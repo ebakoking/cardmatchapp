@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   FlatList,
   Alert,
-  Image,
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -18,6 +17,7 @@ import { SPACING } from '../../theme/spacing';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import { getPhotoUrl } from '../../utils/photoUrl';
+import ProfilePhoto from '../../components/ProfilePhoto';
 
 // 8 varsayılan avatar - emoji ve renk kombinasyonları
 // Avatar listesi - merkezi dosyadan import
@@ -36,16 +36,16 @@ const AvatarSelectionScreen: React.FC<Props> = ({ navigation }) => {
   );
   const [useCustomPhoto, setUseCustomPhoto] = useState(!!user?.profilePhotoUrl);
 
-  // Prime kullanıcılar için galeri fotoğrafı seç
+  // Prime veya Plus kullanıcılar için galeri fotoğrafı seç (backend ile uyumlu)
   const handlePickProfilePhoto = async () => {
-    if (!user?.isPrime) {
-      Alert.alert('Prime Özelliği', 'Galeriden profil fotoğrafı seçmek için Prime üye olmalısın.');
+    if (!user?.isPrime && !user?.isPlus) {
+      Alert.alert('Üyelik Gerekli', 'Galeriden profil fotoğrafı seçmek için Prime veya Plus üye olmalısın.');
       return;
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.8,
+      quality: 0.9, // ✅ Quality artırıldı (0.8 → 0.9)
       allowsEditing: true,
       aspect: [1, 1],
     });
@@ -54,27 +54,58 @@ const AvatarSelectionScreen: React.FC<Props> = ({ navigation }) => {
 
     try {
       setUploading(true);
+      const uri = result.assets[0].uri;
+      const width = result.assets[0].width;
+      const height = result.assets[0].height;
+
+      console.log('[ProfilePhoto] Image selected:', {
+        uri: uri.substring(0, 50),
+        width,
+        height,
+        hasUri: !!uri,
+      });
+
       const form = new FormData();
+      const photoUri =
+        uri.startsWith('file://') || uri.startsWith('content://') || uri.startsWith('ph://')
+          ? uri
+          : `file://${uri}`;
+
+      console.log('[ProfilePhoto] FormData photo URI:', photoUri.substring(0, 50));
+
       form.append('photo', {
-        // @ts-ignore
-        uri: result.assets[0].uri,
+        // @ts-ignore - React Native FormData: { uri, name, type }; api.ts FormData'da Content-Type kaldırıyor
+        uri: photoUri,
         name: 'profile.jpg',
         type: 'image/jpeg',
-      });
+      } as any);
 
-      const res = await api.post('/api/user/me/profile-photo', form, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
+      console.log('[ProfilePhoto] Uploading to server...');
+      const res = await api.post('/api/user/me/profile-photo', form);
 
       if (res.data.success) {
-        setCustomPhotoUrl(getPhotoUrl(res.data.data.profilePhotoUrl));
+        const fullUrl = getPhotoUrl(res.data.data.profilePhotoUrl);
+        console.log('[ProfilePhoto] ✅ Upload success, URL:', fullUrl);
+        setCustomPhotoUrl(fullUrl);
         setUseCustomPhoto(true);
         await refreshProfile();
-        Alert.alert('Başarılı', 'Profil fotoğrafın güncellendi!');
+        Alert.alert('Başarılı', 'Profil fotoğrafın güncellendi!', [
+          { text: 'Tamam', onPress: () => navigation.goBack() },
+        ]);
       }
     } catch (error: any) {
-      console.error('Profile photo upload error:', error);
-      Alert.alert('Hata', error.response?.data?.error?.message || 'Fotoğraf yüklenemedi.');
+      console.error('[ProfilePhoto] ❌ Upload error:', error?.response?.data || error);
+      const code = error?.response?.data?.error?.code;
+      const msg = error?.response?.data?.error?.message || error?.message || 'Fotoğraf yüklenemedi.';
+      if (code === 'NOT_PRIME') {
+        Alert.alert('Üyelik Gerekli', 'Galeriden profil fotoğrafı yüklemek için Prime veya Plus üye olmalısın.');
+      } else if (code === 'NO_FILE') {
+        Alert.alert('Dosya Yok', 'Lütfen galeriden bir fotoğraf seç ve tekrar dene.');
+      } else if (code === 'INVALID_FILE') {
+        Alert.alert('Geçersiz Dosya', 'Dosya bozuk veya okunamıyor. Lütfen başka bir fotoğraf dene.');
+      } else {
+        Alert.alert('Hata', msg);
+      }
     } finally {
       setUploading(false);
     }
@@ -144,12 +175,12 @@ const AvatarSelectionScreen: React.FC<Props> = ({ navigation }) => {
         Profilinde görünecek avatarını seç
       </Text>
 
-      {/* Prime kullanıcılar için özel profil fotoğrafı seçeneği */}
-      {user?.isPrime && (
+      {/* Prime veya Plus kullanıcılar için özel profil fotoğrafı seçeneği */}
+      {(user?.isPrime || user?.isPlus) && (
         <View style={styles.primeSection}>
           {customPhotoUrl ? (
             <View style={styles.customPhotoContainer}>
-              <Image source={{ uri: customPhotoUrl }} style={styles.customPhoto} />
+              <ProfilePhoto uri={customPhotoUrl} size={100} />
               <View style={styles.customPhotoActions}>
                 <TouchableOpacity 
                   style={styles.changePhotoButton}
@@ -180,7 +211,7 @@ const AvatarSelectionScreen: React.FC<Props> = ({ navigation }) => {
                 <ActivityIndicator color="#FFD700" />
               ) : (
                 <Text style={styles.primeUploadText}>
-                  👑 Galeriden Profil Fotoğrafı Yükle (Prime)
+                  👑 Galeriden Profil Fotoğrafı Yükle (Prime/Plus)
                 </Text>
               )}
             </TouchableOpacity>
@@ -213,9 +244,9 @@ const AvatarSelectionScreen: React.FC<Props> = ({ navigation }) => {
         </Text>
       </TouchableOpacity>
 
-      {!user?.isPrime && (
+      {!user?.isPrime && !user?.isPlus && (
         <Text style={styles.primeHint}>
-          👑 Prime üyeler galeriden gerçek fotoğraf yükleyebilir
+          👑 Prime veya Plus üyeler galeriden gerçek fotoğraf yükleyebilir
         </Text>
       )}
     </SafeAreaView>
@@ -261,13 +292,6 @@ const styles = StyleSheet.create({
   },
   customPhotoContainer: {
     alignItems: 'center',
-  },
-  customPhoto: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    borderWidth: 3,
-    borderColor: '#FFD700',
   },
   customPhotoActions: {
     flexDirection: 'row',

@@ -13,10 +13,14 @@ interface QueueEntry {
   filterMinAge?: number;
   filterMaxAge?: number;
   filterMaxDistance?: number;
-  filterGender?: string; // MALE, FEMALE, BOTH
   preferHighSpark?: boolean; // Prime: en yüksek sparklı kişilerle eşleş
   age?: number;
   gender?: string; // Kullanıcının kendi cinsiyeti
+  interestedIn?: string; // MALE | FEMALE | BOTH - kiminle eşleşmek istediği (sadece bu kullanılır, filterGender kaldırıldı)
+  // Cinsiyet filtresi (50💎, 30 dakika)
+  filterGenderActive?: boolean;
+  filterGender?: string; // 'MALE' | 'FEMALE' | 'BOTH'
+  filterGenderExpiresAt?: Date | null;
   // Boost sistemi
   isBoostActive?: boolean;
   boostExpiresAt?: Date | null;
@@ -108,10 +112,22 @@ function canMatchWithFilters(
   user2: QueueEntry
 ): boolean {
   console.log(`[Filter] Checking filters between users:`);
-  console.log(`[Filter] User1: isPrime=${user1.isPrime}, age=${user1.age}, gender=${user1.gender}, filters: minAge=${user1.filterMinAge}, maxAge=${user1.filterMaxAge}, maxDist=${user1.filterMaxDistance}, filterGender=${user1.filterGender}`);
-  console.log(`[Filter] User2: isPrime=${user2.isPrime}, age=${user2.age}, gender=${user2.gender}, filters: minAge=${user2.filterMinAge}, maxAge=${user2.filterMaxAge}, maxDist=${user2.filterMaxDistance}, filterGender=${user2.filterGender}`);
+  console.log(`[Filter] User1: isPrime=${user1.isPrime}, age=${user1.age}, gender=${user1.gender}, interestedIn=${user1.interestedIn}, filters: minAge=${user1.filterMinAge}, maxAge=${user1.filterMaxAge}, maxDist=${user1.filterMaxDistance}`);
+  console.log(`[Filter] User2: isPrime=${user2.isPrime}, age=${user2.age}, gender=${user2.gender}, interestedIn=${user2.interestedIn}, filters: minAge=${user2.filterMinAge}, maxAge=${user2.filterMaxAge}, maxDist=${user2.filterMaxDistance}`);
 
-  // User1 Prime ise kendi filtreleriyle kontrol et
+  // interestedIn (cinsiyet tercihi): BOTH hepsini kabul; MALE/FEMALE sadece o cinsiyet (+ OTHER'ı BOTH gibi kabul ediyoruz)
+  const u1Wants = String(user1.interestedIn ?? 'BOTH');
+  const u2Wants = String(user2.interestedIn ?? 'BOTH');
+  const g1 = user1.gender != null ? String(user1.gender) : null;
+  const g2 = user2.gender != null ? String(user2.gender) : null;
+  const u1AcceptsU2 = u1Wants === 'BOTH' || !g2 || u1Wants === g2 || g2 === 'OTHER';
+  const u2AcceptsU1 = u2Wants === 'BOTH' || !g1 || u2Wants === g1 || g1 === 'OTHER';
+  if (!u1AcceptsU2 || !u2AcceptsU1) {
+    console.log(`[Filter] BLOCKED - interestedIn mismatch: u1 accepts u2=${u1AcceptsU2}, u2 accepts u1=${u2AcceptsU1}`);
+    return false;
+  }
+
+  // User1 Prime ise kendi filtreleriyle kontrol et (yaş, mesafe)
   if (user1.isPrime) {
     // Yaş kontrolü (maxAge 40 = "40+", üst sınır yok)
     const minAge = user1.filterMinAge ?? 18;
@@ -124,15 +140,6 @@ function canMatchWithFilters(
       }
       if (maxAge !== 40 && user2.age > maxAge) {
         console.log(`[Filter] BLOCKED - Age mismatch: user2.age=${user2.age} > maxAge ${maxAge}`);
-        return false;
-      }
-    }
-    
-    // Cinsiyet kontrolü
-    const genderFilter = user1.filterGender || 'BOTH';
-    if (genderFilter !== 'BOTH' && user2.gender) {
-      if (genderFilter !== user2.gender) {
-        console.log(`[Filter] BLOCKED - Gender mismatch: user1 wants ${genderFilter}, user2 is ${user2.gender}`);
         return false;
       }
     }
@@ -154,7 +161,7 @@ function canMatchWithFilters(
     }
   }
 
-  // User2 Prime ise kendi filtreleriyle kontrol et
+  // User2 Prime ise kendi filtreleriyle kontrol et (yaş, mesafe; cinsiyet zaten yukarıda)
   if (user2.isPrime) {
     // Yaş kontrolü (maxAge 40 = "40+", üst sınır yok)
     const minAge = user2.filterMinAge ?? 18;
@@ -167,15 +174,6 @@ function canMatchWithFilters(
       }
       if (maxAge !== 40 && user1.age > maxAge) {
         console.log(`[Filter] BLOCKED - Age mismatch: user1.age=${user1.age} > maxAge ${maxAge}`);
-        return false;
-      }
-    }
-    
-    // Cinsiyet kontrolü
-    const genderFilter = user2.filterGender || 'BOTH';
-    if (genderFilter !== 'BOTH' && user1.gender) {
-      if (genderFilter !== user1.gender) {
-        console.log(`[Filter] BLOCKED - Gender mismatch: user2 wants ${genderFilter}, user1 is ${user1.gender}`);
         return false;
       }
     }
@@ -300,10 +298,22 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
         // Kullanıcı zaten kuyrukta mı kontrol et - duplicate önleme
         const existingIdx = matchmakingQueue.findIndex((q) => q.userId === userId);
         if (existingIdx >= 0) {
-          console.log('[Matchmaking] User already in queue, updating socket:', { userId, oldSocketId: matchmakingQueue[existingIdx].socketId, newSocketId: socket.id });
-          // Eski entry'yi güncelle (yeni socket ID ile)
-          matchmakingQueue[existingIdx].socketId = socket.id;
-          matchmakingQueue[existingIdx].joinedAt = now;
+          console.log('[Matchmaking] User already in queue, updating socket and entry:', userId);
+          const entry = matchmakingQueue[existingIdx];
+          entry.socketId = socket.id;
+          entry.joinedAt = now;
+          // Filtre/cinsiyet verisini DB'den tazele (kullanıcı ayar değiştirdiyse güncel olsun)
+          entry.filterGenderActive = user.filterGenderActive || false;
+          entry.filterGender = user.filterGender || 'BOTH';
+          entry.filterGenderExpiresAt = user.filterGenderExpiresAt ? new Date(user.filterGenderExpiresAt) : null;
+          entry.gender = user.gender;
+          entry.interestedIn = (user as any).interestedIn ?? 'BOTH';
+          entry.latitude = user.latitude;
+          entry.longitude = user.longitude;
+          entry.age = user.age;
+          entry.filterMinAge = user.filterMinAge;
+          entry.filterMaxAge = user.filterMaxAge;
+          entry.filterMaxDistance = user.filterMaxDistance;
           socket.emit('match:searching');
           await tryMatch(io);
           return;
@@ -321,15 +331,23 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
           });
         }
 
-        // Kadın/Erkek tercihi 30 dk geçerli; süre dolmuşsa efektif BOTH
-        const rawGender = (user as any).filterGender || 'BOTH';
-        const genderExpiresAt = (user as any).filterGenderExpiresAt;
-        const effectiveFilterGender =
-          (rawGender === 'MALE' || rawGender === 'FEMALE') &&
-          genderExpiresAt &&
-          new Date(genderExpiresAt) > new Date()
-            ? rawGender
-            : 'BOTH';
+        // Cinsiyet filtresi kontrolü - süresi dolmuşsa deaktif et
+        let filterGenderActive = user.filterGenderActive || false;
+        let filterGender = user.filterGender || 'BOTH';
+        const filterGenderExpiresAt = user.filterGenderExpiresAt;
+        if (filterGenderActive && filterGenderExpiresAt && new Date() > new Date(filterGenderExpiresAt)) {
+          filterGenderActive = false;
+          filterGender = 'BOTH';
+          // DB'de de güncelle
+          await prisma.user.update({
+            where: { id: userId },
+            data: {
+              filterGenderActive: false,
+              filterGender: 'BOTH',
+              filterGenderExpiresAt: null,
+            },
+          });
+        }
 
         // Queue entry oluştur - filtre değerlerini logla
         const queueEntry: QueueEntry = {
@@ -344,10 +362,14 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
           filterMinAge: user.filterMinAge,
           filterMaxAge: user.filterMaxAge,
           filterMaxDistance: user.filterMaxDistance,
-          filterGender: effectiveFilterGender,
           preferHighSpark: (user as any).preferHighSpark ?? false,
           age: user.age,
           gender: user.gender,
+          interestedIn: (user as any).interestedIn ?? 'BOTH', // Sadece interestedIn kullanılıyor, filterGender yok
+          // Cinsiyet filtresi (50💎, 30 dakika)
+          filterGenderActive,
+          filterGender,
+          filterGenderExpiresAt: filterGenderExpiresAt ? new Date(filterGenderExpiresAt) : null,
           // Boost sistemi
           isBoostActive,
           boostExpiresAt: boostExpiresAt ? new Date(boostExpiresAt) : null,
@@ -379,7 +401,6 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
             minAge: queueEntry.filterMinAge,
             maxAge: queueEntry.filterMaxAge,
             maxDistance: queueEntry.filterMaxDistance,
-            gender: queueEntry.filterGender,
           }
         });
 
@@ -911,7 +932,46 @@ async function tryMatch(io: Server) {
         },
       });
       if (blockExists) continue;
-      
+
+      // ========================================
+      // 🔥 ÖNCELİK 1: CİNSİYET FİLTRESİ KONTROLÜ (50💎, 30 dakika)
+      // ========================================
+
+      // BoostUser'ın cinsiyet filtresi (50💎): MALE/FEMALE ise o cinsiyet + OTHER kabul
+      if (boostUser.filterGenderActive && boostUser.filterGender !== 'BOTH') {
+        const candidateOk = boostUser.filterGender === candidate.gender || candidate.gender === 'OTHER';
+        if (!candidateOk) {
+          console.log('[Matchmaking] ❌ Gender filter blocked (boostUser):', {
+            boostUser: boostUser.userId,
+            boostUserFilter: boostUser.filterGender,
+            candidate: candidate.userId,
+            candidateGender: candidate.gender,
+          });
+          continue;
+        }
+      }
+
+      // Candidate'ın cinsiyet filtresi (50💎): MALE/FEMALE ise o cinsiyet + OTHER kabul
+      if (candidate.filterGenderActive && candidate.filterGender !== 'BOTH') {
+        const boostOk = candidate.filterGender === boostUser.gender || boostUser.gender === 'OTHER';
+        if (!boostOk) {
+          console.log('[Matchmaking] ❌ Gender filter blocked (candidate):', {
+            candidate: candidate.userId,
+            candidateFilter: candidate.filterGender,
+            boostUser: boostUser.userId,
+            boostUserGender: boostUser.gender,
+          });
+          continue;
+        }
+      }
+
+      console.log('[Matchmaking] ✅ Gender filter passed:', {
+        boostUser: boostUser.userId,
+        boostUserFilter: boostUser.filterGender || 'BOTH',
+        candidate: candidate.userId,
+        candidateFilter: candidate.filterGender || 'BOTH',
+      });
+
       // Prime filtre kontrolü
       if (!canMatchWithFilters(boostUser, candidate)) continue;
       
@@ -967,6 +1027,46 @@ async function tryMatch(io: Server) {
         },
       });
       if (blockExists) continue;
+
+      // ========================================
+      // 🔥 ÖNCELİK 1: CİNSİYET FİLTRESİ KONTROLÜ (50💎, 30 dakika)
+      // ========================================
+
+      // User A'nın cinsiyet filtresi (50💎): MALE/FEMALE ise o cinsiyet + OTHER kabul
+      if (a.filterGenderActive && a.filterGender !== 'BOTH') {
+        const bOk = a.filterGender === b.gender || b.gender === 'OTHER';
+        if (!bOk) {
+          console.log('[Matchmaking] ❌ Gender filter blocked (userA):', {
+            userA: a.userId,
+            userAFilter: a.filterGender,
+            userB: b.userId,
+            userBGender: b.gender,
+          });
+          continue;
+        }
+      }
+
+      // User B'nin cinsiyet filtresi (50💎): MALE/FEMALE ise o cinsiyet + OTHER kabul
+      if (b.filterGenderActive && b.filterGender !== 'BOTH') {
+        const aOk = b.filterGender === a.gender || a.gender === 'OTHER';
+        if (!aOk) {
+          console.log('[Matchmaking] ❌ Gender filter blocked (userB):', {
+            userB: b.userId,
+            userBFilter: b.filterGender,
+            userA: a.userId,
+            userAGender: a.gender,
+          });
+          continue;
+        }
+      }
+
+      console.log('[Matchmaking] ✅ Gender filter passed:', {
+        userA: a.userId,
+        userAFilter: a.filterGender || 'BOTH',
+        userB: b.userId,
+        userBFilter: b.filterGender || 'BOTH',
+      });
+
       if (!canMatchWithFilters(a, b)) continue;
 
       candidates.push({ entry: b, user: userB });
@@ -988,5 +1088,5 @@ async function tryMatch(io: Server) {
     return;
   }
   
-  console.log('[Matchmaking] No match found in this round');
+  console.log('[Matchmaking] No match found in this round. Queue size:', matchmakingQueue.length, '- Check server logs above for filter/block reasons.');
 }

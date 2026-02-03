@@ -373,58 +373,63 @@ export function registerChatHandlers(io: Server, socket: Socket) {
         // Alıcıyı belirle (session'daki diğer kullanıcı)
         const receiverId = session.user1Id === payload.senderId ? session.user2Id : session.user1Id;
 
-        // İLK MEDYA KONTROLÜ: MediaCounter tablosundan sayaç al (mesaj silinse bile korunur)
-        const counter = await prisma.mediaCounter.findUnique({
-          where: {
-            chatSessionId_senderId_mediaType: {
+        // 🔒 RACE CONDITION FIX: Tüm işlemi transaction içinde yap
+        const { counter, message } = await prisma.$transaction(async (tx) => {
+          // İLK MEDYA KONTROLÜ: MediaCounter tablosundan sayaç al (mesaj silinse bile korunur)
+          const counter = await tx.mediaCounter.findUnique({
+            where: {
+              chatSessionId_senderId_mediaType: {
+                chatSessionId: session.id,
+                senderId: payload.senderId,
+                mediaType: 'photo',
+              },
+            },
+          });
+
+          const previousPhotoCount = counter?.count || 0;
+
+          // İlk foto ise: locked=false, isFirstFree=true
+          // Sonrakiler: locked=true, isFirstFree=false
+          const isFirstFree = previousPhotoCount === 0;
+          const locked = !isFirstFree;
+          const mediaPrice = MEDIA_COSTS.photo; // 20 token
+
+          console.log(`[Chat] Photo - previousCount: ${previousPhotoCount}, isFirstFree: ${isFirstFree}, locked: ${locked}`);
+
+          // Sayacı artır (upsert ile)
+          const updatedCounter = await tx.mediaCounter.upsert({
+            where: {
+              chatSessionId_senderId_mediaType: {
+                chatSessionId: session.id,
+                senderId: payload.senderId,
+                mediaType: 'photo',
+              },
+            },
+            update: {
+              count: { increment: 1 },
+            },
+            create: {
               chatSessionId: session.id,
               senderId: payload.senderId,
+              receiverId,
               mediaType: 'photo',
+              count: 1,
             },
-          },
-        });
+          });
 
-        const previousPhotoCount = counter?.count || 0;
-
-        // İlk foto ise: locked=false, isFirstFree=true
-        // Sonrakiler: locked=true, isFirstFree=false
-        const isFirstFree = previousPhotoCount === 0;
-        const locked = !isFirstFree;
-        const mediaPrice = MEDIA_COSTS.photo; // 20 token
-
-        console.log(`[Chat] Photo - previousCount: ${previousPhotoCount}, isFirstFree: ${isFirstFree}, locked: ${locked}`);
-
-        // Sayacı artır (upsert ile)
-        await prisma.mediaCounter.upsert({
-          where: {
-            chatSessionId_senderId_mediaType: {
+          const message = await tx.message.create({
+            data: {
               chatSessionId: session.id,
               senderId: payload.senderId,
+              mediaUrl: payload.url,
               mediaType: 'photo',
+              locked,
+              isFirstFree,
+              mediaPrice,
             },
-          },
-          update: {
-            count: { increment: 1 },
-          },
-          create: {
-            chatSessionId: session.id,
-            senderId: payload.senderId,
-            receiverId,
-            mediaType: 'photo',
-            count: 1,
-          },
-        });
+          });
 
-        const message = await prisma.message.create({
-          data: {
-            chatSessionId: session.id,
-            senderId: payload.senderId,
-            mediaUrl: payload.url,
-            mediaType: 'photo',
-            locked,
-            isFirstFree,
-            mediaPrice,
-          },
+          return { counter: updatedCounter, message };
         });
 
         console.log('[Chat] Photo message created:', message.id);
@@ -451,6 +456,8 @@ export function registerChatHandlers(io: Server, socket: Socket) {
       sessionId: string;
       senderId: string;
       url: string;
+      thumbnailUrl?: string;
+      duration?: number;
     }) => {
       console.log('[Chat] media:video received:', payload);
       try {
@@ -473,60 +480,66 @@ export function registerChatHandlers(io: Server, socket: Socket) {
         // Alıcıyı belirle (session'daki diğer kullanıcı)
         const receiverId = session.user1Id === payload.senderId ? session.user2Id : session.user1Id;
 
-        // İLK MEDYA KONTROLÜ: MediaCounter tablosundan sayaç al
-        const counter = await prisma.mediaCounter.findUnique({
-          where: {
-            chatSessionId_senderId_mediaType: {
+        // 🔒 RACE CONDITION FIX: Tüm işlemi transaction içinde yap
+        const { counter, message } = await prisma.$transaction(async (tx) => {
+          // İLK MEDYA KONTROLÜ: MediaCounter tablosundan sayaç al
+          const counter = await tx.mediaCounter.findUnique({
+            where: {
+              chatSessionId_senderId_mediaType: {
+                chatSessionId: session.id,
+                senderId: payload.senderId,
+                mediaType: 'video',
+              },
+            },
+          });
+
+          const previousVideoCount = counter?.count || 0;
+          const isFirstFree = previousVideoCount === 0;
+          const locked = !isFirstFree;
+          const mediaPrice = MEDIA_COSTS.video; // 50 token
+
+          console.log(`[Chat] Video - previousCount: ${previousVideoCount}, isFirstFree: ${isFirstFree}, locked: ${locked}`);
+
+          // Sayacı artır
+          const updatedCounter = await tx.mediaCounter.upsert({
+            where: {
+              chatSessionId_senderId_mediaType: {
+                chatSessionId: session.id,
+                senderId: payload.senderId,
+                mediaType: 'video',
+              },
+            },
+            update: {
+              count: { increment: 1 },
+            },
+            create: {
               chatSessionId: session.id,
               senderId: payload.senderId,
+              receiverId,
               mediaType: 'video',
+              count: 1,
             },
-          },
-        });
+          });
 
-        const previousVideoCount = counter?.count || 0;
-        const isFirstFree = previousVideoCount === 0;
-        const locked = !isFirstFree;
-        const mediaPrice = MEDIA_COSTS.video; // 50 token
-
-        console.log(`[Chat] Video - previousCount: ${previousVideoCount}, isFirstFree: ${isFirstFree}, locked: ${locked}`);
-
-        // Sayacı artır
-        await prisma.mediaCounter.upsert({
-          where: {
-            chatSessionId_senderId_mediaType: {
+          const message = await tx.message.create({
+            data: {
               chatSessionId: session.id,
               senderId: payload.senderId,
+              mediaUrl: payload.url,
+              thumbnailUrl: payload.thumbnailUrl ?? null,
               mediaType: 'video',
+              locked,
+              isFirstFree,
+              mediaPrice,
             },
-          },
-          update: {
-            count: { increment: 1 },
-          },
-          create: {
-            chatSessionId: session.id,
-            senderId: payload.senderId,
-            receiverId,
-            mediaType: 'video',
-            count: 1,
-          },
-        });
+          });
 
-        const message = await prisma.message.create({
-          data: {
-            chatSessionId: session.id,
-            senderId: payload.senderId,
-            mediaUrl: payload.url,
-            mediaType: 'video',
-            locked,
-            isFirstFree,
-            mediaPrice,
-          },
+          return { counter: updatedCounter, message };
         });
 
         console.log('[Chat] Video message created:', message.id);
         
-        // chat:message olarak emit et (mobile'da bu dinleniyor)
+        // chat:message olarak emit et (thumbnailUrl dahil - frontend'de video önizleme için)
         io.to(session.id).emit('chat:message', {
           ...message,
           chatSessionId: session.id,
@@ -572,55 +585,60 @@ export function registerChatHandlers(io: Server, socket: Socket) {
         // Alıcıyı belirle (session'daki diğer kullanıcı)
         const receiverId = session.user1Id === payload.senderId ? session.user2Id : session.user1Id;
 
-        // İLK MEDYA KONTROLÜ: MediaCounter tablosundan sayaç al
-        const counter = await prisma.mediaCounter.findUnique({
-          where: {
-            chatSessionId_senderId_mediaType: {
+        // 🔒 RACE CONDITION FIX: Tüm işlemi transaction içinde yap
+        const { counter, message } = await prisma.$transaction(async (tx) => {
+          // İLK MEDYA KONTROLÜ: MediaCounter tablosundan sayaç al
+          const counter = await tx.mediaCounter.findUnique({
+            where: {
+              chatSessionId_senderId_mediaType: {
+                chatSessionId: session.id,
+                senderId: payload.senderId,
+                mediaType: 'audio',
+              },
+            },
+          });
+
+          const previousAudioCount = counter?.count || 0;
+          const isFirstFree = previousAudioCount === 0;
+          const locked = !isFirstFree;
+          const mediaPrice = MEDIA_COSTS.audio; // 5 token
+
+          console.log(`[Chat] Audio - previousCount: ${previousAudioCount}, isFirstFree: ${isFirstFree}, locked: ${locked}`);
+
+          // Sayacı artır
+          const updatedCounter = await tx.mediaCounter.upsert({
+            where: {
+              chatSessionId_senderId_mediaType: {
+                chatSessionId: session.id,
+                senderId: payload.senderId,
+                mediaType: 'audio',
+              },
+            },
+            update: {
+              count: { increment: 1 },
+            },
+            create: {
               chatSessionId: session.id,
               senderId: payload.senderId,
+              receiverId,
               mediaType: 'audio',
+              count: 1,
             },
-          },
-        });
+          });
 
-        const previousAudioCount = counter?.count || 0;
-        const isFirstFree = previousAudioCount === 0;
-        const locked = !isFirstFree;
-        const mediaPrice = MEDIA_COSTS.audio; // 5 token
-
-        console.log(`[Chat] Audio - previousCount: ${previousAudioCount}, isFirstFree: ${isFirstFree}, locked: ${locked}`);
-
-        // Sayacı artır
-        await prisma.mediaCounter.upsert({
-          where: {
-            chatSessionId_senderId_mediaType: {
+          const message = await tx.message.create({
+            data: {
               chatSessionId: session.id,
               senderId: payload.senderId,
+              mediaUrl: payload.url,
               mediaType: 'audio',
+              locked,
+              isFirstFree,
+              mediaPrice,
             },
-          },
-          update: {
-            count: { increment: 1 },
-          },
-          create: {
-            chatSessionId: session.id,
-            senderId: payload.senderId,
-            receiverId,
-            mediaType: 'audio',
-            count: 1,
-          },
-        });
+          });
 
-        const message = await prisma.message.create({
-          data: {
-            chatSessionId: session.id,
-            senderId: payload.senderId,
-            mediaUrl: payload.url,
-            mediaType: 'audio',
-            locked,
-            isFirstFree,
-            mediaPrice,
-          },
+          return { counter: updatedCounter, message };
         });
 
         console.log('[Chat] Audio message created:', message.id);
@@ -645,7 +663,6 @@ export function registerChatHandlers(io: Server, socket: Socket) {
   socket.on(
     'gift:send',
     async (payload: {
-      fromUserId: string;
       toUserId: string;
       sessionId: string;
       amount: number;
@@ -655,17 +672,24 @@ export function registerChatHandlers(io: Server, socket: Socket) {
         logTokenGiftAttempt(!FEATURES.TOKEN_GIFT_ENABLED);
         if (!FEATURES.TOKEN_GIFT_ENABLED) {
           console.log('[Gift] ⛔ TOKEN GIFT DISABLED - Request blocked');
-          socket.emit('gift:error', { 
-            code: 'FEATURE_DISABLED', 
+          socket.emit('gift:error', {
+            code: 'FEATURE_DISABLED',
             message: FEATURES.TOKEN_GIFT_DISABLED_MESSAGE,
             disabled: true,
           });
           return;
         }
 
-        const { fromUserId, toUserId, sessionId, amount } = payload;
+        // 🔒 SECURITY FIX: fromUserId'yi socket'ten al, client payload'una güvenme
+        const fromUserId = (socket as any).userId;
+        if (!fromUserId) {
+          socket.emit('gift:error', { code: 'UNAUTHORIZED', message: 'Yetkisiz işlem.' });
+          return;
+        }
+
+        const { toUserId, sessionId, amount } = payload;
         console.log('[Gift] ========== TOKEN GIFT START ==========');
-        console.log('[Gift] Payload:', JSON.stringify(payload));
+        console.log('[Gift] Payload:', JSON.stringify({ fromUserId, toUserId, sessionId, amount }));
 
         // Validasyon
         if (!amount || amount <= 0 || amount > 10000) {
@@ -677,6 +701,18 @@ export function registerChatHandlers(io: Server, socket: Socket) {
         const session = await prisma.chatSession.findUnique({ where: { id: sessionId } });
         if (!session || session.endedAt) {
           socket.emit('gift:error', { code: 'INVALID_SESSION', message: 'Geçersiz sohbet.' });
+          return;
+        }
+
+        // 🔒 SECURITY FIX: Session ownership check - fromUserId session'da olmalı
+        if (session.user1Id !== fromUserId && session.user2Id !== fromUserId) {
+          socket.emit('gift:error', { code: 'UNAUTHORIZED', message: 'Bu sohbete yetkisiz erişim.' });
+          return;
+        }
+
+        // toUserId de session'da olmalı
+        if (session.user1Id !== toUserId && session.user2Id !== toUserId) {
+          socket.emit('gift:error', { code: 'INVALID_RECIPIENT', message: 'Geçersiz alıcı.' });
           return;
         }
 

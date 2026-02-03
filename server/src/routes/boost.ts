@@ -121,23 +121,32 @@ router.post('/activate', authMiddleware, async (req: any, res) => {
       });
     }
 
-    // Transaction ID ile duplicate kontrolü (aynı satın alma tekrar kullanılmasın)
-    if (transactionId) {
-      const existingPurchase = await prisma.boostPurchase.findFirst({
-        where: { 
-          transactionId,
+    // 🔒 SECURITY FIX: Transaction ID zorunlu (null bypass'ı önle)
+    if (!transactionId) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'MISSING_TRANSACTION_ID',
+          message: 'Transaction ID gerekli.',
         },
       });
-      
-      if (existingPurchase) {
-        return res.status(400).json({
-          success: false,
-          error: { 
-            code: 'DUPLICATE_TRANSACTION', 
-            message: 'Bu satın alma zaten kullanılmış.' 
-          },
-        });
-      }
+    }
+
+    // Transaction ID ile duplicate kontrolü (aynı satın alma tekrar kullanılmasın)
+    const existingPurchase = await prisma.boostPurchase.findFirst({
+      where: {
+        transactionId,
+      },
+    });
+
+    if (existingPurchase) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'DUPLICATE_TRANSACTION',
+          message: 'Bu satın alma zaten kullanılmış.',
+        },
+      });
     }
 
     // Boost zaten aktifse süreyi uzat

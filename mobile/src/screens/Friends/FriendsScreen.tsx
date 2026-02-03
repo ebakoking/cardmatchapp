@@ -8,7 +8,6 @@ import {
   RefreshControl,
   Alert,
   Modal,
-  Vibration,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -21,6 +20,7 @@ import { SPACING } from '../../theme/spacing';
 import { api } from '../../services/api';
 import { getSocket } from '../../services/socket';
 import ProfilePhoto from '../../components/ProfilePhoto';
+import { getPhotoUrl } from '../../utils/photoUrl';
 import { useAuth } from '../../context/AuthContext';
 
 type Props = NativeStackScreenProps<FriendsStackParamList, 'FriendsList'>;
@@ -60,22 +60,12 @@ interface FriendRequest {
   createdAt: string;
 }
 
-interface IncomingCall {
-  fromUserId: string;
-  fromNickname: string;
-  fromPhoto?: string;
-  fromAvatarId?: number;
-  friendshipId: string;
-  callType: 'voice' | 'video';
-}
-
 const FriendsScreen: React.FC<Props> = ({ navigation }) => {
   const { user } = useAuth();
   const [friends, setFriends] = useState<Friend[]>([]);
   const [requests, setRequests] = useState<FriendRequest[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<'friends' | 'requests'>('friends');
-  const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
   const [friendAlertVisible, setFriendAlertVisible] = useState(false);
   const [friendAlertType, setFriendAlertType] = useState<'success' | 'error' | 'reject'>('success');
   const [friendAlertMessage, setFriendAlertMessage] = useState('');
@@ -183,25 +173,6 @@ const FriendsScreen: React.FC<Props> = ({ navigation }) => {
       ));
     };
 
-    // Gelen arama
-    const handleIncomingCall = (data: IncomingCall) => {
-      console.log('[FriendsScreen] friend:call:incoming', data);
-      
-      // 🚨 Kendi aramam ise modal gösterme!
-      if (data.fromUserId === user?.id) {
-        console.log('[FriendsScreen] Ignoring - I am the caller');
-        return;
-      }
-      
-      setIncomingCall(data);
-      Vibration.vibrate([0, 500, 200, 500, 200, 500]); // Titreşim
-    };
-
-    // Arama sonlandı
-    const handleCallEnded = () => {
-      setIncomingCall(null);
-    };
-
     // 🟢 Kullanıcı online/offline durumu değiştiğinde
     const handleUserStatus = (data: { userId: string; isOnline: boolean; lastSeenAt?: string }) => {
       console.log('[FriendsScreen] user:status', data);
@@ -221,8 +192,6 @@ const FriendsScreen: React.FC<Props> = ({ navigation }) => {
     socket.on('friend:rejected', handleFriendRejected);
     socket.on('friend:message', handleNewMessage);
     socket.on('friend:notification', handleFriendNotification);
-    socket.on('friend:call:incoming', handleIncomingCall);
-    socket.on('friend:call:ended', handleCallEnded);
     socket.on('user:status', handleUserStatus);
 
     return () => {
@@ -231,8 +200,6 @@ const FriendsScreen: React.FC<Props> = ({ navigation }) => {
       socket.off('friend:rejected', handleFriendRejected);
       socket.off('friend:message', handleNewMessage);
       socket.off('friend:notification', handleFriendNotification);
-      socket.off('friend:call:incoming', handleIncomingCall);
-      socket.off('friend:call:ended', handleCallEnded);
       socket.off('user:status', handleUserStatus);
     };
   }, [user?.id]);
@@ -303,33 +270,6 @@ const FriendsScreen: React.FC<Props> = ({ navigation }) => {
     );
   };
 
-  // Gelen aramayı kabul et
-  const handleAcceptCall = () => {
-    if (!incomingCall) return;
-    setIncomingCall(null);
-    // FriendCallScreen'e git, orada socket.emit yapılacak
-    navigation.navigate('FriendCall', {
-      friendshipId: incomingCall.friendshipId,
-      friendNickname: incomingCall.fromNickname,
-      friendPhoto: incomingCall.fromPhoto,
-      friendAvatarId: incomingCall.fromAvatarId,
-      friendId: incomingCall.fromUserId,
-      callType: incomingCall.callType,
-      isIncoming: true,
-    });
-  };
-
-  // Gelen aramayı reddet
-  const handleRejectCall = () => {
-    if (!incomingCall) return;
-    const socket = getSocket();
-    socket.emit('friend:call:reject', {
-      friendshipId: incomingCall.friendshipId,
-      callerId: incomingCall.fromUserId, // Arayanın ID'si
-    });
-    setIncomingCall(null);
-  };
-
   // getAvatar artık merkezi dosyadan import ediliyor
 
   // Son mesaj önizlemesi
@@ -364,7 +304,7 @@ const FriendsScreen: React.FC<Props> = ({ navigation }) => {
           navigation.navigate('FriendChat', {
             friendshipId: item.friendshipId,
             friendNickname: item.nickname,
-            friendPhoto: item.profilePhoto,
+            friendPhoto: item.profilePhoto ? getPhotoUrl(item.profilePhoto) : undefined,
             friendAvatarId: item.avatarId,
             friendOnline: item.isOnline,
             friendId: item.id,
@@ -375,7 +315,7 @@ const FriendsScreen: React.FC<Props> = ({ navigation }) => {
         <View style={styles.avatarWrapper}>
           {item.profilePhoto ? (
             <ProfilePhoto
-              uri={item.profilePhoto}
+              uri={getPhotoUrl(item.profilePhoto)}
               size={50}
               online={item.isOnline}
             />
@@ -428,7 +368,7 @@ const FriendsScreen: React.FC<Props> = ({ navigation }) => {
     return (
       <View style={styles.requestRow}>
         {item.profilePhoto ? (
-          <ProfilePhoto uri={item.profilePhoto} size={50} />
+          <ProfilePhoto uri={getPhotoUrl(item.profilePhoto)} size={50} />
         ) : (
           <View style={[styles.avatarCircle, { backgroundColor: avatar.color }]}>
             <Text style={styles.avatarEmoji}>{avatar.emoji}</Text>
@@ -536,63 +476,6 @@ const FriendsScreen: React.FC<Props> = ({ navigation }) => {
           contentContainerStyle={{ paddingBottom: 20 }}
         />
       )}
-
-      {/* Gelen Arama Modalı - Uygulama Temasına Uygun */}
-      <Modal visible={!!incomingCall} transparent animationType="fade">
-        <View style={styles.callModalOverlay}>
-          <View style={styles.callModal}>
-            {/* Arama Tipi Badge */}
-            <View style={styles.callTypeBadge}>
-              <Ionicons 
-                name={incomingCall?.callType === 'video' ? 'videocam' : 'call'} 
-                size={16} 
-                color={COLORS.text} 
-              />
-              <Text style={styles.callTypeBadgeText}>
-                {incomingCall?.callType === 'video' ? 'Görüntülü Arama' : 'Sesli Arama'}
-              </Text>
-            </View>
-            
-            {/* Arayan Profil */}
-            <View style={styles.callerProfile}>
-              {incomingCall?.fromPhoto ? (
-                <View style={styles.callerPhotoWrapper}>
-                  <ProfilePhoto uri={incomingCall.fromPhoto} size={100} />
-                </View>
-              ) : (
-                <View style={[styles.callerAvatarCircle, { backgroundColor: getAvatar(incomingCall?.fromAvatarId).color }]}>
-                  <Text style={styles.callerAvatarEmoji}>{getAvatar(incomingCall?.fromAvatarId).emoji}</Text>
-                </View>
-              )}
-            </View>
-            
-            <Text style={styles.callerName}>{incomingCall?.fromNickname}</Text>
-            <Text style={styles.callSubtext}>sizi arıyor...</Text>
-            
-            {/* Butonlar */}
-            <View style={styles.callActions}>
-              <View style={styles.callActionWrapper}>
-                <TouchableOpacity 
-                  style={[styles.callActionButton, styles.rejectCallButton]}
-                  onPress={handleRejectCall}
-                >
-                  <Ionicons name="call" size={28} color="#fff" style={{ transform: [{ rotate: '135deg' }] }} />
-                </TouchableOpacity>
-                <Text style={styles.callActionLabel}>Reddet</Text>
-              </View>
-              <View style={styles.callActionWrapper}>
-                <TouchableOpacity 
-                  style={[styles.callActionButton, styles.acceptCallButton]}
-                  onPress={handleAcceptCall}
-                >
-                  <Ionicons name="call" size={28} color="#fff" />
-                </TouchableOpacity>
-                <Text style={styles.callActionLabel}>Kabul Et</Text>
-              </View>
-            </View>
-          </View>
-        </View>
-      </Modal>
 
       {/* Arkadaşlık İsteği Alert Modal */}
       <Modal
@@ -821,93 +704,6 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 18,
     fontWeight: 'bold',
-  },
-  // Gelen arama modalı stilleri
-  callModalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(10,10,20,0.95)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  callModal: {
-    backgroundColor: COLORS.background,
-    borderRadius: 24,
-    padding: SPACING.xxl,
-    alignItems: 'center',
-    width: '85%',
-    borderWidth: 1,
-    borderColor: COLORS.primary + '30',
-  },
-  callTypeBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: COLORS.primary + '30',
-    paddingHorizontal: SPACING.md,
-    paddingVertical: SPACING.xs,
-    borderRadius: 20,
-    gap: SPACING.xs,
-    marginBottom: SPACING.lg,
-  },
-  callTypeBadgeText: {
-    ...FONTS.caption,
-    color: COLORS.text,
-    fontWeight: '600',
-  },
-  callerProfile: {
-    marginBottom: SPACING.lg,
-  },
-  callerPhotoWrapper: {
-    borderRadius: 60,
-    borderWidth: 3,
-    borderColor: COLORS.primary,
-    padding: 3,
-  },
-  callerAvatarCircle: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 3,
-    borderColor: COLORS.primary,
-  },
-  callerAvatarEmoji: {
-    fontSize: 48,
-  },
-  callerName: {
-    ...FONTS.h1,
-    color: COLORS.text,
-    marginBottom: SPACING.xs,
-  },
-  callSubtext: {
-    ...FONTS.body,
-    color: COLORS.accent,
-    marginBottom: SPACING.xxl,
-  },
-  callActions: {
-    flexDirection: 'row',
-    gap: 60,
-  },
-  callActionWrapper: {
-    alignItems: 'center',
-  },
-  callActionLabel: {
-    ...FONTS.caption,
-    color: COLORS.textMuted,
-    marginTop: SPACING.sm,
-  },
-  callActionButton: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  rejectCallButton: {
-    backgroundColor: '#E74C3C',
-  },
-  acceptCallButton: {
-    backgroundColor: '#00B894',
   },
   // Arkadaşlık İsteği Alert Modal
   friendAlertOverlay: {

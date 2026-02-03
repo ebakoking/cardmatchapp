@@ -29,6 +29,8 @@ import { SPACING } from '../../theme/spacing';
 import { getSocket } from '../../services/socket';
 import { api } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useIAPContext } from '../../context/IAPContext';
+import { DIAMOND_AMOUNT_TO_PRODUCT_ID } from '../../constants/iapProducts';
 import MessageBubble from '../../components/MessageBubble';
 import ProfilePhoto from '../../components/ProfilePhoto';
 import PhotoEditor from '../../components/PhotoEditor';
@@ -52,6 +54,7 @@ interface FriendMessage {
   senderId: string;
   content?: string | null;
   mediaUrl?: string | null;
+  thumbnailUrl?: string | null; // 🎬 Video thumbnail URL
   mediaType?: 'audio' | 'photo' | 'video' | null;
   isInstant?: boolean;
   isViewed?: boolean;
@@ -75,11 +78,11 @@ const GIFT_OPTIONS = [
   { amount: 100, emoji: '💎💎💎', label: '100', popular: false },
 ];
 
-// Hızlı satın alma seçenekleri
+// Hızlı satın alma seçenekleri (Apple IAP fiyatları)
 const PURCHASE_OPTIONS = [
-  { tokens: 50, price: '49,90 TL', popular: false },
-  { tokens: 100, price: '89,90 TL', popular: true },
-  { tokens: 250, price: '199,90 TL', popular: false },
+  { tokens: 50, price: '49,99 TL', popular: false },
+  { tokens: 100, price: '79,99 TL', popular: true },
+  { tokens: 250, price: '149,99 TL', popular: false },
 ];
 
 // Avatar listesi
@@ -93,6 +96,7 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
   // Avatar helper - merkezi dosyadan import ediliyor
   const avatar = getAvatar(friendAvatarId);
   const { user, deductTokens, updateTokenBalance, addTokens, refreshProfile, instantBalance } = useAuth();
+  const { isReady: iapReady, purchaseItem, finishTransaction } = useIAPContext();
   const [messages, setMessages] = useState<FriendMessage[]>([]);
   const [input, setInput] = useState('');
   const [giftModalVisible, setGiftModalVisible] = useState(false);
@@ -212,128 +216,94 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
     fetchFeatures();
   }, []);
 
+  // Socket handler'ları useCallback ile (memory leak önleme - aynı referans ile socket.off)
+  const handlePresence = useCallback((payload: { friendshipId: string; userId: string; isOnline: boolean }) => {
+    if (payload.friendshipId === friendshipId && payload.userId === friendId) {
+      setIsPartnerInChat(payload.isOnline);
+      console.log(`[FriendChat] Partner presence: ${payload.isOnline ? 'online' : 'offline'}`);
+    }
+  }, [friendshipId, friendId]);
+
+  const handleFriendMessage = useCallback((msg: FriendMessage & { friendChatId?: string }) => {
+    if (msg.friendChatId !== friendshipId) return;
+    setMessages((prev) => [...prev, msg]);
+    setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+  }, [friendshipId]);
+
+  const handleGiftUpdate = useCallback((payload: {
+    fromUserId: string; toUserId: string; amount: number; fromNickname: string;
+    senderNewBalance: number; receiverNewBalance: number; timestamp: number;
+  }) => {
+    const isSender = payload.fromUserId === user?.id;
+    const isReceiver = payload.toUserId === user?.id;
+    if (isSender) {
+      updateTokenBalance(payload.senderNewBalance);
+      setMessages((prev) => [...prev, {
+        id: `gift-sent-${payload.timestamp}`,
+        senderId: 'system',
+        isSystem: true,
+        systemType: 'gift',
+        content: `💎 -${payload.amount} elmas gönderildi!`,
+        createdAt: new Date().toISOString(),
+      }]);
+      showGiftAnimation(payload.amount, 'sent');
+    } else if (isReceiver) {
+      updateTokenBalance(payload.receiverNewBalance);
+      setMessages((prev) => [...prev, {
+        id: `gift-received-${payload.timestamp}`,
+        senderId: 'system',
+        isSystem: true,
+        systemType: 'gift',
+        systemData: { fromNickname: payload.fromNickname, amount: payload.amount },
+        content: `🎁 +${payload.amount} elmas alındı!`,
+        createdAt: new Date().toISOString(),
+      }]);
+      showGiftAnimation(payload.amount, 'received');
+    }
+  }, [user?.id, updateTokenBalance, showGiftAnimation]);
+
+  const handleGiftError = useCallback((payload: { code: string; message: string; disabled?: boolean }) => {
+    if (payload.code === 'FEATURE_DISABLED' || payload.disabled) {
+      setTokenGiftEnabled(false);
+      setTokenGiftDisabledMessage(payload.message);
+      Alert.alert('Bakım', payload.message);
+    } else {
+      Alert.alert('Hata', payload.message);
+    }
+  }, []);
+
+  const handleMediaDeleted = useCallback((payload: { messageId: string; friendshipId: string; deletedBy: string }) => {
+    setMessages((prev) => prev.filter((m) => m.id !== payload.messageId));
+  }, []);
+
   // Socket bağlantısı ve mesaj dinleyicileri
   useEffect(() => {
     const socket = getSocket();
     console.log('[FriendChat] 🔌 Setting up socket listeners for room:', friendshipId);
     socket.emit('friend:join', { friendshipId, userId: user?.id });
 
-    // Join onayını dinle
     socket.once('friend:joined', (data: { friendshipId: string; success: boolean }) => {
       console.log('[FriendChat] ✅ Joined room:', data);
     });
 
-    // Mevcut mesajları yükle
     loadMessages();
 
-    // Arkadaş sohbete girdi/çıktı
-    socket.on('friend:presence', (payload: { friendshipId: string; userId: string; isOnline: boolean }) => {
-      if (payload.friendshipId === friendshipId && payload.userId === friendId) {
-        setIsPartnerInChat(payload.isOnline);
-        console.log(`[FriendChat] Partner presence: ${payload.isOnline ? 'online' : 'offline'}`);
-      }
-    });
-    
-    // Not: friend:media:viewed artık handleViewWithElmas içinde dinleniyor
-
-    console.log('[FriendChat] 📡 Registering friend:message listener for:', friendshipId);
-    socket.on('friend:message', (msg: FriendMessage & { friendChatId?: string }) => {
-      console.log('[FriendChat] 📨 MESSAGE RECEIVED:', JSON.stringify(msg, null, 2));
-      console.log('[FriendChat] Expected friendChatId:', friendshipId, 'Got:', msg.friendChatId);
-      if (msg.friendChatId !== friendshipId) {
-        console.log('[FriendChat] ❌ Message ignored - wrong friendChatId');
-        return;
-      }
-      console.log('[FriendChat] ✅ Adding message to state');
-      setMessages((prev) => [...prev, msg]);
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
-    });
-
-    // 🚀 SNAPCHAT STYLE: Tek event - friend:gift:update
-    socket.on('friend:gift:update', (payload: { 
-      fromUserId: string; 
-      toUserId: string; 
-      amount: number; 
-      fromNickname: string;
-      senderNewBalance: number;
-      receiverNewBalance: number;
-      timestamp: number;
-    }) => {
-      console.log('[FriendChat] 🎁 GIFT UPDATE:', payload);
-      
-      const isSender = payload.fromUserId === user?.id;
-      const isReceiver = payload.toUserId === user?.id;
-      
-      if (isSender) {
-        // 💸 GÖNDERİCİ: Bakiyeyi server onayı ile güncelle
-        console.log('[FriendChat] 💸 SENDER - New balance:', payload.senderNewBalance);
-        updateTokenBalance(payload.senderNewBalance);
-        
-        // Gönderim mesajı
-        const systemMessage: FriendMessage = {
-          id: `gift-sent-${payload.timestamp}`,
-          senderId: 'system',
-          isSystem: true,
-          systemType: 'gift',
-          content: `💎 -${payload.amount} elmas gönderildi!`,
-          createdAt: new Date().toISOString(),
-        };
-        setMessages((prev) => [...prev, systemMessage]);
-        showGiftAnimation(payload.amount, 'sent');
-        
-      } else if (isReceiver) {
-        // 🎁 ALICI: Bakiyeyi anında güncelle
-        console.log('[FriendChat] 🎁 RECEIVER - New balance:', payload.receiverNewBalance);
-        updateTokenBalance(payload.receiverNewBalance);
-        
-        // Alım mesajı
-        const systemMessage: FriendMessage = {
-          id: `gift-received-${payload.timestamp}`,
-          senderId: 'system',
-          isSystem: true,
-          systemType: 'gift',
-          systemData: {
-            fromNickname: payload.fromNickname,
-            amount: payload.amount,
-          },
-          content: `🎁 +${payload.amount} elmas alındı!`,
-          createdAt: new Date().toISOString(),
-        };
-        setMessages((prev) => [...prev, systemMessage]);
-        showGiftAnimation(payload.amount, 'received');
-      }
-    });
-
-    // Hediye hatası - KILL SWITCH dahil
-    socket.on('friend:gift:error', (payload: { code: string; message: string; disabled?: boolean }) => {
-      console.log('[FriendChat] Gift error:', payload);
-      if (payload.code === 'FEATURE_DISABLED' || payload.disabled) {
-        setTokenGiftEnabled(false);
-        setTokenGiftDisabledMessage(payload.message);
-        Alert.alert('Bakım', payload.message);
-      } else {
-        Alert.alert('Hata', payload.message);
-      }
-    });
-
-    // Medya silindi (Snapchat tarzı - diğer kullanıcı görüntüledi)
-    socket.on('friend:media:deleted', (payload: { messageId: string; friendshipId: string; deletedBy: string }) => {
-      console.log('[FriendChat] friend:media:deleted:', payload);
-      setMessages(prev => prev.filter(m => m.id !== payload.messageId));
-    });
+    socket.on('friend:presence', handlePresence);
+    socket.on('friend:message', handleFriendMessage);
+    socket.on('friend:gift:update', handleGiftUpdate);
+    socket.on('friend:gift:error', handleGiftError);
+    socket.on('friend:media:deleted', handleMediaDeleted);
 
     return () => {
       console.log('[FriendChat] 🧹 Cleanup - removing listeners and leaving room');
       socket.emit('friend:leave', { friendshipId, userId: user?.id });
-      socket.off('friend:message');
-      socket.off('friend:gift:update');
-      socket.off('friend:gift:error');
-      socket.off('friend:presence');
-      socket.off('friend:media:deleted');
+      socket.off('friend:presence', handlePresence);
+      socket.off('friend:message', handleFriendMessage);
+      socket.off('friend:gift:update', handleGiftUpdate);
+      socket.off('friend:gift:error', handleGiftError);
+      socket.off('friend:media:deleted', handleMediaDeleted);
     };
-  // 🚨 CRITICAL: Remove function dependencies to prevent unnecessary re-runs
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [friendshipId, friendId, user?.id]);
+  }, [friendshipId, friendId, user?.id, handlePresence, handleFriendMessage, handleGiftUpdate, handleGiftError, handleMediaDeleted]);
 
   // Mevcut mesajları API'den yükle
   const loadMessages = async () => {
@@ -394,7 +364,6 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
       const response = await fetch(`${apiBaseUrl}/api/upload/audio`, {
         method: 'POST',
         body: formData,
-        headers: { 'Content-Type': 'multipart/form-data' },
       });
 
       if (!response.ok) throw new Error('Upload failed');
@@ -663,6 +632,9 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
       
       const data = await response.json();
       console.log(`[FriendChat] Upload successful, URL: ${data.url}`);
+      if (data.thumbnailUrl) {
+        console.log(`[FriendChat] 🎬 Thumbnail URL: ${data.thumbnailUrl}`);
+      }
 
       const socket = getSocket();
       socket.emit('friend:media', {
@@ -670,6 +642,8 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
         senderId: user?.id,
         mediaType: type,
         mediaUrl: data.url,
+        thumbnailUrl: data.thumbnailUrl, // 🎬 Thumbnail URL (video için)
+        duration: data.duration, // Video duration (saniye)
         isInstant,
       });
       
@@ -714,50 +688,47 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
     setGiftModalVisible(false);
   };
 
-  // Hızlı satın alma sonrası hediye gönder
+  // Hızlı satın alma: önce gerçek IAP, sonra backend + hediye seçeneği
   const handlePurchaseComplete = async (purchasedAmount: number) => {
-    const giftAmount = pendingGiftAmount; // Önce kaydet
+    const productId = DIAMOND_AMOUNT_TO_PRODUCT_ID[purchasedAmount];
+    if (!productId) return;
+    if (!iapReady) {
+      Alert.alert('Bilgi', 'Mağaza hazır değil. Lütfen kısa süre sonra tekrar deneyin.');
+      return;
+    }
+    const giftAmount = pendingGiftAmount;
     setPurchaseModalVisible(false);
     setPendingGiftAmount(0);
-    
+
     try {
-      // API ile veritabanına token ekle
-      const res = await api.post('/api/user/purchase-tokens', { amount: purchasedAmount });
-      
+      const purchase = await purchaseItem(productId);
+      const transactionId = (purchase as any).transactionId ?? (purchase as any).purchaseToken ?? '';
+      const res = await api.post<{ success: boolean; data: { newBalance: number } }>(
+        '/api/user/purchase-tokens',
+        { amount: purchasedAmount, transactionId }
+      );
       if (res.data.success) {
-        // Local state'i de güncelle
-        updateTokenBalance(res.data.data.newBalance);
-        
-        Alert.alert('Satın Alma Başarılı', `${purchasedAmount} elmas hesabınıza eklendi!`, [
-          { 
-            text: 'Hediye Gönder', 
-            onPress: () => {
-              if (giftAmount > 0) {
-                // Bakiye kontrolü yapmadan gönder (skipBalanceCheck=true)
-                setTimeout(() => handleSendGift(giftAmount, true), 300);
-              }
-            }
-          },
-          { text: 'Tamam' }
-        ]);
+        await finishTransaction(purchase, true);
+        if (res.data.data?.newBalance !== undefined) {
+          updateTokenBalance(res.data.data.newBalance);
+        }
+        const buttons: Array<{ text: string; onPress?: () => void }> = [];
+        if (giftAmount > 0) {
+          buttons.push({
+            text: 'Hediye Gönder',
+            onPress: () => setTimeout(() => handleSendGift(giftAmount, true), 300),
+          });
+        }
+        buttons.push({ text: 'Tamam' });
+        Alert.alert('Başarılı! 💎', `${purchasedAmount} elmas hesabınıza eklendi!`, buttons);
       } else {
-        Alert.alert('Hata', 'Satın alma başarısız oldu.');
+        Alert.alert('Hata', 'Satın alma sunucuda işlenemedi. Destek ile iletişime geçin.');
       }
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.message?.toLowerCase().includes('cancel') || error?.message?.toLowerCase().includes('iptal')) return;
       console.error('Purchase error:', error);
-      Alert.alert('Hata', 'Satın alma sırasında bir hata oluştu.');
+      Alert.alert('Hata', error?.message ?? 'Satın alma sırasında bir hata oluştu.');
     }
-  };
-
-  // ============ ARAMA ============
-  const handleVoiceCall = () => {
-    // Direk arama başlat - "sohbette mi" kontrolü kaldırıldı
-    startCall('voice');
-  };
-
-  const handleVideoCall = () => {
-    // Direk arama başlat - "sohbette mi" kontrolü kaldırıldı
-    startCall('video');
   };
 
   // ============ MEDYA KİLİTLEME SİSTEMİ ============
@@ -961,29 +932,6 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
     setPurchaseModalVisible(true);
   };
 
-  // ============ ARAMA KONTROLÜ ============
-  
-  const startCall = (type: 'voice' | 'video') => {
-    const socket = getSocket();
-    socket.emit('friend:call:start', {
-      fromUserId: user?.id,
-      toUserId: friendId,
-      friendshipId,
-      callType: type,
-    });
-    
-    // Navigate to call screen
-    navigation.navigate('FriendCall', {
-      friendshipId,
-      friendNickname,
-      friendPhoto,
-      friendAvatarId,
-      friendId,
-      callType: type,
-      isIncoming: false,
-    });
-  };
-
   // ============ PROFİL GÖRÜNTÜLE ============
   const handleViewProfile = () => {
     navigation.navigate('FriendProfile', {
@@ -1031,16 +979,6 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
               </Text>
             </View>
           </TouchableOpacity>
-
-          {/* Call buttons */}
-          <View style={styles.headerActions}>
-            <TouchableOpacity onPress={handleVoiceCall} style={styles.headerButton}>
-              <Ionicons name="call" size={22} color={COLORS.primary} />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={handleVideoCall} style={styles.headerButton}>
-              <Ionicons name="videocam" size={22} color={COLORS.primary} />
-            </TouchableOpacity>
-          </View>
         </View>
 
         {/* Messages */}
@@ -1262,7 +1200,18 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
                       style={[styles.giftPurchaseCard, option.popular && styles.giftPurchaseCardPopular]}
                       onPress={() => {
                         setGiftModalVisible(false);
-                        Alert.alert('Yakında', 'Satın alma özelliği yakında aktif olacak!');
+                        if (!iapReady) {
+                          Alert.alert('Bilgi', 'Mağaza hazır değil. Lütfen kısa süre sonra tekrar deneyin.');
+                          return;
+                        }
+                        Alert.alert(
+                          'Elmas Satın Al',
+                          `${option.tokens} elmas satın almak istediğinize emin misiniz?\n\n${option.price}`,
+                          [
+                            { text: 'İptal', style: 'cancel' },
+                            { text: 'Satın Al', onPress: () => handlePurchaseComplete(option.tokens) },
+                          ]
+                        );
                       }}
                     >
                       {option.popular && (
@@ -1458,6 +1407,7 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
             }}
             onViewed={handleMediaViewed}
             imageUrl={selectedMedia.mediaUrl || 'https://via.placeholder.com/300'}
+            thumbnailUrl={selectedMedia.thumbnailUrl} // 🎬 Video thumbnail URL
             messageId={selectedMedia.id}
             mediaType={selectedMedia.mediaType === 'video' ? 'video' : 'photo'}
             isMine={selectedMedia.senderId === user?.id}
@@ -1486,28 +1436,30 @@ const FriendChatScreen: React.FC<Props> = ({ route, navigation }) => {
                 Gerekli: {pendingGiftAmount} 💎 | Mevcut: {instantBalance} 💎
               </Text>
               <View style={styles.purchaseOptions}>
-                <TouchableOpacity
-                  style={styles.purchaseOption}
-                  onPress={() => handlePurchaseComplete(50)}
-                >
-                  <Text style={styles.purchaseAmount}>💎 50</Text>
-                  <Text style={styles.purchasePrice}>49,90 TL</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.purchaseOption, styles.purchasePopular]}
-                  onPress={() => handlePurchaseComplete(100)}
-                >
-                  <Text style={styles.purchasePopularBadge}>Popüler</Text>
-                  <Text style={styles.purchaseAmount}>💎 100</Text>
-                  <Text style={styles.purchasePrice}>89,90 TL</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.purchaseOption}
-                  onPress={() => handlePurchaseComplete(250)}
-                >
-                  <Text style={styles.purchaseAmount}>💎 250</Text>
-                  <Text style={styles.purchasePrice}>199,90 TL</Text>
-                </TouchableOpacity>
+                {PURCHASE_OPTIONS.map((opt) => (
+                  <TouchableOpacity
+                    key={opt.tokens}
+                    style={[styles.purchaseOption, opt.popular && styles.purchasePopular]}
+                    onPress={() => {
+                      if (!iapReady) {
+                        Alert.alert('Bilgi', 'Mağaza hazır değil. Lütfen kısa süre sonra tekrar deneyin.');
+                        return;
+                      }
+                      Alert.alert(
+                        'Elmas Satın Al',
+                        `${opt.tokens} elmas satın almak istediğinize emin misiniz?\n\n${opt.price}`,
+                        [
+                          { text: 'İptal', style: 'cancel' },
+                          { text: 'Satın Al', onPress: () => handlePurchaseComplete(opt.tokens) },
+                        ]
+                      );
+                    }}
+                  >
+                    {opt.popular && <Text style={styles.purchasePopularBadge}>Popüler</Text>}
+                    <Text style={styles.purchaseAmount}>💎 {opt.tokens}</Text>
+                    <Text style={styles.purchasePrice}>{opt.price}</Text>
+                  </TouchableOpacity>
+                ))}
               </View>
               <TouchableOpacity 
                 style={styles.purchaseCancel}

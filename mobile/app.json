@@ -2,7 +2,7 @@
   "expo": {
     "name": "CardMatch",
     "slug": "cardmatch",
-    "version": "0.1.0",
+    "version": "1.0.14",
     "scheme": "cardmatch",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -15,7 +15,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.cardmatch.app",
-      "buildNumber": "1.0.0",
+      "buildNumber": "1.0.14",
       "infoPlist": {
         "NSCameraUsageDescription": "Fotoğraf ve video çekmek için kameraya erişim gerekiyor.",
         "NSMicrophoneUsageDescription": "Sesli mesaj göndermek için mikrofona erişim gerekiyor.",

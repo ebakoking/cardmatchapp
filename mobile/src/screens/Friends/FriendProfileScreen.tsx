@@ -5,7 +5,6 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Image,
   Alert,
   ActivityIndicator,
   Dimensions,
@@ -19,6 +18,7 @@ import { SPACING } from '../../theme/spacing';
 import { api } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import BlurredPhoto from '../../components/BlurredPhoto';
+import ProfilePhoto from '../../components/ProfilePhoto';
 import { getPhotoUrl } from '../../utils/photoUrl';
 
 type Props = NativeStackScreenProps<any, 'FriendProfile'>;
@@ -247,14 +247,15 @@ const FriendProfileScreen: React.FC<Props> = ({ route, navigation }) => {
           <View style={{ width: 24 }} />
         </View>
 
-        {/* Avatar / Profile Photo Section */}
+        {/* Avatar / Profile Photo Section - Prime profil fotoğrafı ProfilePhoto ile (siyah ekran önleme) */}
         <View style={styles.avatarSection}>
           {profile.profilePhotoUrl ? (
-            // Prime kullanıcı özel profil fotoğrafı varsa göster
-            <Image 
-              source={{ uri: getPhotoUrl(profile.profilePhotoUrl) }} 
-              style={styles.profilePhoto}
-            />
+            <View style={styles.profilePhotoWrapper}>
+              <ProfilePhoto
+                uri={profile.profilePhotoUrl}
+                size={120}
+              />
+            </View>
           ) : (
             // Avatar göster
             <View style={[styles.avatarContainer, { backgroundColor: avatar.color }]}>
@@ -388,7 +389,8 @@ const FriendProfileScreen: React.FC<Props> = ({ route, navigation }) => {
             onPress={() => navigation.navigate('FriendChat', {
               friendshipId: profile.friendshipId,
               friendNickname: profile.nickname,
-              friendPhoto: profile.profilePhotos?.[0]?.isUnlocked ? profile.profilePhotos[0].url : undefined,
+              friendPhoto: profile.profilePhotoUrl || (profile.profilePhotos?.[0]?.isUnlocked ? profile.profilePhotos[0].url : undefined),
+              friendAvatarId: profile.avatarId,
               friendOnline: profile.isOnline,
               friendId: profile.id,
             })}
@@ -456,13 +458,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginVertical: SPACING.md,
   },
-  profilePhoto: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
+  profilePhotoWrapper: {
     marginVertical: SPACING.md,
     borderWidth: 3,
-    borderColor: '#FFD700', // Prime sarı rengi
+    borderColor: COLORS.accent,
+    borderRadius: 60,
   },
   avatarEmoji: {
     fontSize: 60,

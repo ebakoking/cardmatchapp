@@ -30,6 +30,7 @@ interface Props {
   onClose: () => void;
   onViewed?: (messageId: string, mediaType: 'photo' | 'video') => void;
   imageUrl: string;
+  thumbnailUrl?: string; // 🎬 Video thumbnail URL
   messageId: string;
   mediaType?: 'photo' | 'video';
   isMine: boolean;
@@ -48,6 +49,7 @@ const PhotoViewModal: React.FC<Props> = ({
   onClose,
   onViewed,
   imageUrl,
+  thumbnailUrl, // 🎬 Video thumbnail URL
   messageId,
   mediaType = 'photo',
   isMine,
@@ -294,10 +296,10 @@ const PhotoViewModal: React.FC<Props> = ({
             </TouchableOpacity>
 
             <View style={styles.lockContainer}>
-              {/* Blur preview */}
-              {imageUrl ? (
+              {/* 🎬 Blur preview - Video için thumbnail kullan */}
+              {(thumbnailUrl || imageUrl) ? (
                 <Image
-                  source={{ uri: imageUrl }}
+                  source={{ uri: thumbnailUrl || imageUrl }}
                   style={styles.blurImage}
                   blurRadius={40}
                 />

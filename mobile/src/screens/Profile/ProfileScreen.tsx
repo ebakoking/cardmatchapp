@@ -21,6 +21,7 @@ import { ProfileStackParamList } from '../../navigation';
 import { COLORS } from '../../theme/colors';
 import { FONTS } from '../../theme/fonts';
 import { SPACING } from '../../theme/spacing';
+import Constants from 'expo-constants';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../services/api';
 import ProfilePhoto from '../../components/ProfilePhoto';
@@ -126,9 +127,7 @@ const ProfileScreen: React.FC<Props> = ({ navigation }) => {
       });
       form.append('type', type);
       
-      const response = await api.post('/api/user/me/photos', form, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
+      const response = await api.post('/api/user/me/photos', form);
       console.log('[ProfileScreen] Upload success:', response.data);
       await refreshProfile();
     } catch (error: any) {
@@ -209,9 +208,7 @@ const ProfileScreen: React.FC<Props> = ({ navigation }) => {
         type: 'image/jpeg',
       });
       
-      await api.put(`/api/user/me/photos/${photoId}`, form, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
+      await api.put(`/api/user/me/photos/${photoId}`, form);
       await refreshProfile();
     } catch {
       Alert.alert('Hata', 'Fotoğraf değiştirilemedi.');
@@ -450,7 +447,7 @@ const ProfileScreen: React.FC<Props> = ({ navigation }) => {
               delayLongPress={300}
               activeOpacity={0.7}
             >
-              <Image source={{ uri: getPhotoUrl(photo.url) }} style={styles.photo} />
+              <Image source={{ uri: getPhotoUrl(photo.url) }} style={styles.photo} resizeMode="cover" />
               {photo.caption && (
                 <View style={styles.captionOverlay}>
                   <Text style={styles.captionText} numberOfLines={1}>
@@ -605,6 +602,11 @@ const ProfileScreen: React.FC<Props> = ({ navigation }) => {
           <Ionicons name="snow-outline" size={18} color={COLORS.textMuted} />
           <Text style={styles.freezeButtonText}>Hesabımı Dondur</Text>
         </TouchableOpacity>
+
+        {/* Sürüm (hangi build yüklü doğrulama) */}
+        <Text style={styles.versionText}>
+          Sürüm {Constants.expoConfig?.version ?? '—'} (Build {Constants.expoConfig?.ios?.buildNumber ?? Constants.expoConfig?.android?.versionCode ?? '—'})
+        </Text>
       </ScrollView>
 
       {/* Bio Modal */}
@@ -1028,6 +1030,13 @@ const styles = StyleSheet.create({
   freezeButtonText: {
     color: COLORS.textMuted,
     fontSize: 14,
+  },
+  versionText: {
+    color: COLORS.textMuted,
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: SPACING.lg,
+    marginBottom: SPACING.xl,
   },
   // Modals
   modalOverlay: {

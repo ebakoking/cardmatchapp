@@ -18,6 +18,8 @@ import { FONTS } from '../theme/fonts';
 import { SPACING } from '../theme/spacing';
 import { api } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useIAPContext } from '../context/IAPContext';
+import { IAP_PRODUCT_IDS } from '../constants/iapProducts';
 
 interface BoostStatus {
   isActive: boolean;
@@ -35,6 +37,7 @@ interface Props {
 
 const BoostButton: React.FC<Props> = ({ onBoostActivated }) => {
   const { refreshProfile, user } = useAuth();
+  const { isReady: iapReady, purchaseItem, finishTransaction } = useIAPContext();
   const [status, setStatus] = useState<BoostStatus | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -147,35 +150,33 @@ const BoostButton: React.FC<Props> = ({ onBoostActivated }) => {
   const handlePurchaseBoost = async () => {
     try {
       setLoading(true);
-      
-      // TODO: Production'da RevenueCat veya native IAP kullanılacak
-      // Şimdilik development için direkt aktifleştir
-      // 
-      // Production implementasyonu:
-      // 1. RevenueCat SDK ile satın alma başlat
-      // 2. Purchases.purchaseProduct(status.productId)
-      // 3. Başarılı olursa transactionId ve purchaseToken al
-      // 4. Backend'e gönder
-      
-      // Development: Direkt aktifleştir (simüle satın alma)
-      const res = await api.post<{ success: boolean; message: string; data: any }>(
-        '/api/boost/activate',
-        { 
-          transactionId: `dev_${Date.now()}`,
-          purchaseToken: 'development_test_token',
+
+      if (iapReady) {
+        const purchase = await purchaseItem(IAP_PRODUCT_IDS.BOOST_1H);
+        const transactionId = (purchase as any).transactionId ?? (purchase as any).transactionReceipt ?? '';
+        const purchaseToken = (purchase as any).purchaseToken ?? (purchase as any).transactionReceipt ?? transactionId;
+        const res = await api.post<{ success: boolean; message: string; data: any }>(
+          '/api/boost/activate',
+          { transactionId, purchaseToken }
+        );
+        if (res.data.success) {
+          await finishTransaction(purchase, true);
+          Vibration.vibrate(100);
+          animateRocket();
+          Alert.alert('Boost Aktif!', res.data.message);
+          setModalVisible(false);
+          await loadStatus();
+          await refreshProfile();
+          onBoostActivated?.();
+        } else {
+          Alert.alert('Hata', res.data.message || 'Boost aktifleştirilemedi.');
         }
-      );
-      
-      Vibration.vibrate(100);
-      animateRocket();
-      
-      Alert.alert('Boost Aktif!', res.data.message);
-      setModalVisible(false);
-      await loadStatus();
-      await refreshProfile();
-      onBoostActivated?.();
+      } else {
+        Alert.alert('Bilgi', 'Mağaza hazır değil. Lütfen kısa süre sonra tekrar deneyin.');
+      }
     } catch (error: any) {
-      Alert.alert('Hata', error.response?.data?.error?.message || 'Boost aktifleştirilemedi.');
+      if (error?.message?.toLowerCase().includes('cancel') || error?.message?.toLowerCase().includes('iptal')) return;
+      Alert.alert('Hata', error.response?.data?.error?.message || error?.message || 'Boost aktifleştirilemedi.');
     } finally {
       setLoading(false);
     }
@@ -185,7 +186,7 @@ const BoostButton: React.FC<Props> = ({ onBoostActivated }) => {
     // Satın alma onayı
     Alert.alert(
       'Boost Satın Al',
-      `1 saatlik Boost için ₺${status?.price?.toFixed(2) || '199.90'} ödeme yapılacak.\n\nDevam etmek istiyor musunuz?`,
+      `1 saatlik Boost için ₺${status?.price?.toFixed(2) || '199.99'} ödeme yapılacak.\n\nDevam etmek istiyor musunuz?`,
       [
         { text: 'İptal', style: 'cancel' },
         { 
@@ -285,7 +286,7 @@ const BoostButton: React.FC<Props> = ({ onBoostActivated }) => {
                 <Text style={styles.durationText}>1 Saatlik Boost</Text>
               </View>
               <View style={styles.priceRow}>
-                <Text style={styles.priceValue}>₺{status?.price?.toFixed(2) || '199.90'}</Text>
+                <Text style={styles.priceValue}>₺{status?.price?.toFixed(2) || '199.99'}</Text>
               </View>
               <Text style={styles.priceNote}>Tek seferlik ödeme</Text>
             </View>

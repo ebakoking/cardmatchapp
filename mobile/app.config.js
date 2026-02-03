@@ -13,7 +13,7 @@ export default {
   expo: {
     name: 'CardMatch',
     slug: 'cardmatch',
-    version: '0.1.0',
+    version: '1.0.14',
     scheme: 'cardmatch',
     orientation: 'portrait',
     icon: './assets/icon.png',
@@ -26,12 +26,15 @@ export default {
     ios: {
       supportsTablet: false,
       bundleIdentifier: 'com.cardmatch.app',
-      buildNumber: '1.0.0',
+      buildNumber: '1.0.14',
+      config: {
+        usesNonExemptEncryption: false,
+      },
       infoPlist: {
         NSCameraUsageDescription:
           'Profil fotoğrafı ve doğrulama videosu çekmek için kameraya ihtiyacımız var.',
         NSMicrophoneUsageDescription:
-          'Sesli ve görüntülü aramalar için mikrofona ihtiyacımız var.',
+          'Ses mesajları göndermek için mikrofona ihtiyacımız var.',
         NSPhotoLibraryUsageDescription:
           'Profil fotoğrafı yüklemek için fotoğraf galerinize erişmemiz gerekiyor.',
       },
@@ -45,6 +48,9 @@ export default {
       package: 'com.cardmatch.app',
     },
     plugins: [
+      // expo-iap: Yerel "expo config" plugin çözümlemesi hata veriyor; build alabilmek için kapalı.
+      // package.json'da expo-iap var, EAS build sırasında yüklenecek. Submit sonrası gerekirse tekrar aç.
+      // 'expo-iap',
       'expo-notifications',
       'expo-camera',
       'expo-image-picker',
@@ -72,6 +78,19 @@ export default {
       // EAS
       eas: {
         projectId: 'e5d78c7d-0cd4-4332-9789-513ed87bd31e',
+      },
+      // IAP Product ID override – "SKU not found" alıyorsan App Store Connect'teki Product ID'leri buraya yaz
+      // App Store Connect Product ID'leri (varsayılan: com.cardmatch.app.*)
+      // TestFlight’ta timer debug overlay (SHOW_TIMER_DEBUG_OVERLAY=true EAS env ile)
+      showTimerDebugOverlay: process.env.SHOW_TIMER_DEBUG_OVERLAY === 'true',
+      iapProductIds: {
+        diamond_50: process.env.EXPO_PUBLIC_IAP_DIAMOND_50 || 'com.cardmatch.app.tokens_50',
+        diamond_100: process.env.EXPO_PUBLIC_IAP_DIAMOND_100 || 'com.cardmatch.app.tokens_100',
+        diamond_250: process.env.EXPO_PUBLIC_IAP_DIAMOND_250 || 'com.cardmatch.app.tokens_250',
+        boost_1h: process.env.EXPO_PUBLIC_IAP_BOOST_1H || 'com.cardmatch.app.boost_1h',
+        prime_weekly: process.env.EXPO_PUBLIC_IAP_PRIME_WEEKLY || 'com.cardmatch.app.prime_weekly2',
+        prime_monthly: process.env.EXPO_PUBLIC_IAP_PRIME_MONTHLY || 'com.cardmatch.app.prime_monthly',
+        prime_yearly: process.env.EXPO_PUBLIC_IAP_PRIME_YEARLY || 'com.cardmatch.app.prime_yearly2',
       },
     },
   },

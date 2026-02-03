@@ -6,12 +6,11 @@ import {
   TouchableOpacity,
   Alert,
   ActivityIndicator,
-  TextInput,
-  Keyboard,
   ScrollView,
 } from 'react-native';
+import { Slider } from '@miblanchard/react-native-slider';
+import * as Haptics from 'expo-haptics';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import Slider from '@react-native-community/slider';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { ChatStackParamList } from '../../navigation';
 import { COLORS } from '../../theme/colors';
@@ -22,49 +21,48 @@ import { api } from '../../services/api';
 
 type Props = NativeStackScreenProps<ChatStackParamList, 'MatchSettings'>;
 
+const MIN_KM = 5;
+const MAX_KM = 160;
+const STEP_KM = 5;
+const MIN_AGE = 18;
+const MAX_AGE = 40; // 40 = "40+"
+
+const SLIDER_ACCENT = COLORS.accent;
+const TRACK_INACTIVE = '#555570';
+
 const MatchSettingsScreen: React.FC<Props> = ({ navigation }) => {
   const { user, refreshProfile } = useAuth();
-  const [minAge, setMinAge] = useState(user?.filterMinAge || 18);
-  const [maxAge, setMaxAge] = useState(user?.filterMaxAge || 99);
-  const [maxDistance, setMaxDistance] = useState(user?.filterMaxDistance || 160);
-  const [filterGender, setFilterGender] = useState<'MALE' | 'FEMALE' | 'OTHER' | 'BOTH'>((user as any)?.filterGender || 'BOTH');
+  const [minAge, setMinAge] = useState(user?.filterMinAge ?? 18);
+  const [maxAge, setMaxAge] = useState(Math.min(MAX_AGE, user?.filterMaxAge ?? MAX_AGE));
+  const [maxDistance, setMaxDistance] = useState(user?.filterMaxDistance ?? 80);
   const [saving, setSaving] = useState(false);
-  
-  // TextInput için string değerler
-  const [minAgeText, setMinAgeText] = useState(String(user?.filterMinAge || 18));
-  const [maxAgeText, setMaxAgeText] = useState(String(user?.filterMaxAge || 99));
 
-  // Prime kontrolü
   const isPrime = user?.isPrime || false;
 
-  // Min yaş değişikliği
-  const handleMinAgeChange = (text: string) => {
-    // Sadece rakam kabul et
-    const numericText = text.replace(/[^0-9]/g, '');
-    setMinAgeText(numericText);
+  const triggerHaptic = () => {
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch (_) {}
   };
 
-  const handleMinAgeBlur = () => {
-    let value = parseInt(minAgeText, 10);
-    if (isNaN(value) || value < 18) value = 18;
-    if (value > 99) value = 99;
-    setMinAge(value);
-    setMinAgeText(String(value));
+  const handleDistanceChange = (value: number | number[]) => {
+    const v = Array.isArray(value) ? value[0] : value;
+    const rounded = Math.round(v / STEP_KM) * STEP_KM;
+    setMaxDistance(Math.max(MIN_KM, Math.min(MAX_KM, rounded)));
   };
 
-  // Max yaş değişikliği
-  const handleMaxAgeChange = (text: string) => {
-    // Sadece rakam kabul et
-    const numericText = text.replace(/[^0-9]/g, '');
-    setMaxAgeText(numericText);
+  const handleMinAgeChange = (value: number | number[]) => {
+    const v = Array.isArray(value) ? value[0] : value;
+    const newMin = Math.round(Math.max(MIN_AGE, Math.min(MAX_AGE, v)));
+    setMinAge(newMin);
+    if (newMin >= maxAge) setMaxAge(Math.min(MAX_AGE, newMin + 1));
   };
 
-  const handleMaxAgeBlur = () => {
-    let value = parseInt(maxAgeText, 10);
-    if (isNaN(value) || value < 18) value = 18;
-    if (value > 99) value = 99;
-    setMaxAge(value);
-    setMaxAgeText(String(value));
+  const handleMaxAgeChange = (value: number | number[]) => {
+    const v = Array.isArray(value) ? value[0] : value;
+    const newMax = Math.round(Math.max(MIN_AGE, Math.min(MAX_AGE, v)));
+    setMaxAge(newMax);
+    if (newMax <= minAge) setMinAge(Math.max(MIN_AGE, newMax - 1));
   };
 
   const handleSave = async () => {
@@ -74,30 +72,26 @@ const MatchSettingsScreen: React.FC<Props> = ({ navigation }) => {
         'Yaş ve mesafe filtreleme sadece Prime üyelere açıktır.',
         [
           { text: 'Tamam', style: 'cancel' },
-          { text: 'Prime\'a Geç', onPress: () => navigation.goBack() },
+          { text: "Prime'a Geç", onPress: () => navigation.goBack() },
         ]
       );
       return;
     }
-
-    // Min > Max kontrolü
     if (minAge > maxAge) {
       Alert.alert('Uyarı', 'Minimum yaş, maksimum yaştan büyük olamaz.');
       return;
     }
-
     try {
       setSaving(true);
       await api.put('/api/user/me', {
         filterMinAge: minAge,
         filterMaxAge: maxAge,
         filterMaxDistance: maxDistance,
-        filterGender: filterGender,
       });
       await refreshProfile();
       Alert.alert('Başarılı', 'Eşleşme ayarlarınız kaydedildi!');
       navigation.goBack();
-    } catch (error) {
+    } catch (error: any) {
       console.log('Filter save error:', error);
       Alert.alert('Hata', 'Ayarlar kaydedilirken bir hata oluştu.');
     } finally {
@@ -115,8 +109,8 @@ const MatchSettingsScreen: React.FC<Props> = ({ navigation }) => {
         <View style={{ width: 50 }} />
       </View>
 
-      <ScrollView 
-        style={styles.scrollView} 
+      <ScrollView
+        style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
@@ -130,175 +124,75 @@ const MatchSettingsScreen: React.FC<Props> = ({ navigation }) => {
         )}
 
         <View style={[styles.section, !isPrime && styles.disabled]}>
-        <Text style={styles.sectionTitle}>Yaş Aralığı</Text>
-        <Text style={styles.ageHint}>Butonları kullanın veya yaşı direkt yazın</Text>
-        
-        {/* Min Yaş */}
-        <View style={styles.ageControlRow}>
-          <Text style={styles.ageControlLabel}>Minimum Yaş</Text>
-          <View style={styles.ageControls}>
-            <TouchableOpacity 
-              style={[styles.ageButton, (!isPrime || minAge <= 18) && styles.ageButtonDisabled]} 
-              onPress={() => { if (minAge > 18) { setMinAge(minAge - 1); setMinAgeText(String(minAge - 1)); } }}
-              disabled={!isPrime || minAge <= 18}
-            >
-              <Text style={styles.ageButtonText}>−</Text>
-            </TouchableOpacity>
-            <TextInput
-              style={[styles.ageInput, !isPrime && styles.ageInputDisabled]}
-              value={minAgeText}
-              onChangeText={handleMinAgeChange}
-              onBlur={handleMinAgeBlur}
-              keyboardType="number-pad"
-              maxLength={2}
-              editable={isPrime}
-              selectTextOnFocus
-              returnKeyType="done"
-              onSubmitEditing={() => Keyboard.dismiss()}
+          <Text style={styles.sectionTitle}>Mesafe Filtresi</Text>
+          <Text style={styles.valueLabel}>
+            {maxDistance >= MAX_KM ? `${MAX_KM}+ km (Tüm Türkiye)` : `${maxDistance} km`}
+          </Text>
+          <View style={styles.sliderWrap}>
+            <Slider
+              value={maxDistance}
+              onValueChange={handleDistanceChange}
+              onSlidingComplete={triggerHaptic}
+              minimumValue={MIN_KM}
+              maximumValue={MAX_KM}
+              step={STEP_KM}
+              minimumTrackTintColor={SLIDER_ACCENT}
+              maximumTrackTintColor={TRACK_INACTIVE}
+              thumbTintColor={SLIDER_ACCENT}
+              disabled={!isPrime}
+              trackClickable
             />
-            <TouchableOpacity 
-              style={[styles.ageButton, (!isPrime || minAge >= 99) && styles.ageButtonDisabled]} 
-              onPress={() => { if (minAge < 99) { setMinAge(minAge + 1); setMinAgeText(String(minAge + 1)); } }}
-              disabled={!isPrime || minAge >= 99}
-            >
-              <Text style={styles.ageButtonText}>+</Text>
-            </TouchableOpacity>
+          </View>
+          <View style={styles.rangeLabels}>
+            <Text style={styles.rangeLabel}>{MIN_KM} km</Text>
+            <Text style={styles.rangeLabel}>{MAX_KM}+ km</Text>
           </View>
         </View>
 
-        {/* Max Yaş */}
-        <View style={styles.ageControlRow}>
-          <Text style={styles.ageControlLabel}>Maksimum Yaş</Text>
-          <View style={styles.ageControls}>
-            <TouchableOpacity 
-              style={[styles.ageButton, (!isPrime || maxAge <= 18) && styles.ageButtonDisabled]} 
-              onPress={() => { if (maxAge > 18) { setMaxAge(maxAge - 1); setMaxAgeText(String(maxAge - 1)); } }}
-              disabled={!isPrime || maxAge <= 18}
-            >
-              <Text style={styles.ageButtonText}>−</Text>
-            </TouchableOpacity>
-            <TextInput
-              style={[styles.ageInput, !isPrime && styles.ageInputDisabled]}
-              value={maxAgeText}
-              onChangeText={handleMaxAgeChange}
-              onBlur={handleMaxAgeBlur}
-              keyboardType="number-pad"
-              maxLength={2}
-              editable={isPrime}
-              selectTextOnFocus
-              returnKeyType="done"
-              onSubmitEditing={() => Keyboard.dismiss()}
+        <View style={[styles.section, !isPrime && styles.disabled]}>
+          <Text style={styles.sectionTitle}>Yaş Aralığı</Text>
+          <Text style={styles.hint}>18 – 40+ yaş arası seçin</Text>
+
+          <Text style={styles.sublabel}>Minimum: {minAge}</Text>
+          <View style={styles.sliderWrap}>
+            <Slider
+              value={minAge}
+              onValueChange={handleMinAgeChange}
+              onSlidingComplete={triggerHaptic}
+              minimumValue={MIN_AGE}
+              maximumValue={MAX_AGE}
+              step={1}
+              minimumTrackTintColor={SLIDER_ACCENT}
+              maximumTrackTintColor={TRACK_INACTIVE}
+              thumbTintColor={SLIDER_ACCENT}
+              disabled={!isPrime}
+              trackClickable
             />
-            <TouchableOpacity 
-              style={[styles.ageButton, (!isPrime || maxAge >= 99) && styles.ageButtonDisabled]} 
-              onPress={() => { if (maxAge < 99) { setMaxAge(maxAge + 1); setMaxAgeText(String(maxAge + 1)); } }}
-              disabled={!isPrime || maxAge >= 99}
-            >
-              <Text style={styles.ageButtonText}>+</Text>
-            </TouchableOpacity>
           </View>
-        </View>
 
-        {/* Özet gösterim */}
-        <View style={styles.ageSummary}>
-          <Text style={styles.ageSummaryText}>{minAge} - {maxAge} yaş arası kişilerle eşleşeceksiniz</Text>
-        </View>
-      </View>
+          <Text style={[styles.sublabel, { marginTop: SPACING.lg }]}>
+            Maksimum: {maxAge === MAX_AGE ? '40+' : maxAge}
+          </Text>
+          <View style={styles.sliderWrap}>
+            <Slider
+              value={maxAge}
+              onValueChange={handleMaxAgeChange}
+              onSlidingComplete={triggerHaptic}
+              minimumValue={MIN_AGE}
+              maximumValue={MAX_AGE}
+              step={1}
+              minimumTrackTintColor={SLIDER_ACCENT}
+              maximumTrackTintColor={TRACK_INACTIVE}
+              thumbTintColor={SLIDER_ACCENT}
+              disabled={!isPrime}
+              trackClickable
+            />
+          </View>
 
-      <View style={[styles.section, !isPrime && styles.disabled]}>
-        <Text style={styles.sectionTitle}>Mesafe Filtresi</Text>
-        <Text style={styles.distanceValue}>
-          {maxDistance >= 160 ? '160+ km (Tüm Türkiye)' : `${maxDistance} km`}
-        </Text>
-        <Slider
-          style={styles.slider}
-          minimumValue={5}
-          maximumValue={160}
-          step={5}
-          value={maxDistance}
-          onValueChange={setMaxDistance}
-          minimumTrackTintColor={COLORS.primary}
-          maximumTrackTintColor={COLORS.surface}
-          thumbTintColor={isPrime ? COLORS.primary : COLORS.textMuted}
-          disabled={!isPrime}
-        />
-        <View style={styles.distanceLabels}>
-          <Text style={styles.distanceLabel}>5 km</Text>
-          <Text style={styles.distanceLabel}>160+ km</Text>
+          <Text style={styles.valueLabel}>
+            {minAge} – {maxAge === MAX_AGE ? '40+' : maxAge} yaş arası
+          </Text>
         </View>
-      </View>
-
-      {/* Cinsiyet Filtresi - Sadece Prime */}
-      <View style={[styles.section, !isPrime && styles.disabled]}>
-        <Text style={styles.sectionTitle}>Cinsiyet Tercihi</Text>
-        <Text style={styles.genderHint}>Kiminle eşleşmek istiyorsun?</Text>
-        
-        {/* İlk satır: Erkek ve Kadın */}
-        <View style={styles.genderRow}>
-          <TouchableOpacity
-            style={[
-              styles.genderOption,
-              filterGender === 'MALE' && styles.genderOptionActive,
-              !isPrime && styles.genderOptionDisabled,
-            ]}
-            onPress={() => isPrime && setFilterGender('MALE')}
-            disabled={!isPrime}
-          >
-            <Text style={[
-              styles.genderText,
-              filterGender === 'MALE' && styles.genderTextActive,
-            ]}>Erkek</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity
-            style={[
-              styles.genderOption,
-              filterGender === 'FEMALE' && styles.genderOptionActive,
-              !isPrime && styles.genderOptionDisabled,
-            ]}
-            onPress={() => isPrime && setFilterGender('FEMALE')}
-            disabled={!isPrime}
-          >
-            <Text style={[
-              styles.genderText,
-              filterGender === 'FEMALE' && styles.genderTextActive,
-            ]}>Kadın</Text>
-          </TouchableOpacity>
-        </View>
-        
-        {/* İkinci satır: Diğer ve Herkes */}
-        <View style={styles.genderRow}>
-          <TouchableOpacity
-            style={[
-              styles.genderOption,
-              filterGender === 'OTHER' && styles.genderOptionActive,
-              !isPrime && styles.genderOptionDisabled,
-            ]}
-            onPress={() => isPrime && setFilterGender('OTHER')}
-            disabled={!isPrime}
-          >
-            <Text style={[
-              styles.genderText,
-              filterGender === 'OTHER' && styles.genderTextActive,
-            ]}>Diğer</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity
-            style={[
-              styles.genderOption,
-              filterGender === 'BOTH' && styles.genderOptionActive,
-              !isPrime && styles.genderOptionDisabled,
-            ]}
-            onPress={() => isPrime && setFilterGender('BOTH')}
-            disabled={!isPrime}
-          >
-            <Text style={[
-              styles.genderText,
-              filterGender === 'BOTH' && styles.genderTextActive,
-            ]}>Herkes</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
 
         <TouchableOpacity
           style={[styles.saveButton, !isPrime && styles.disabledButton]}
@@ -343,14 +237,14 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
   },
   primeWarning: {
-    backgroundColor: 'rgba(255, 215, 0, 0.15)',
+    backgroundColor: COLORS.surfaceLight,
     borderRadius: 12,
     padding: SPACING.md,
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: SPACING.lg,
     borderWidth: 1,
-    borderColor: '#FFD700',
+    borderColor: COLORS.primary,
   },
   primeWarningIcon: {
     fontSize: 24,
@@ -358,7 +252,7 @@ const styles = StyleSheet.create({
   },
   primeWarningText: {
     ...FONTS.body,
-    color: '#FFD700',
+    color: COLORS.accent,
     flex: 1,
   },
   section: {
@@ -368,94 +262,39 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.lg,
   },
   disabled: {
-    opacity: 0.5,
+    opacity: 0.6,
   },
   sectionTitle: {
     ...FONTS.h3,
     marginBottom: SPACING.sm,
   },
-  ageHint: {
+  hint: {
     ...FONTS.caption,
     color: COLORS.textMuted,
-    marginBottom: SPACING.lg,
-    textAlign: 'center',
-  },
-  ageControlRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     marginBottom: SPACING.md,
-  },
-  ageControlLabel: {
-    ...FONTS.body,
-    color: COLORS.text,
-    flex: 1,
-  },
-  ageControls: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  ageButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: COLORS.primary,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  ageButtonDisabled: {
-    backgroundColor: COLORS.textMuted,
-    opacity: 0.5,
-  },
-  ageButtonText: {
-    fontSize: 20,
-    color: COLORS.text,
-    fontWeight: 'bold',
-  },
-  ageInput: {
-    width: 60,
-    height: 40,
-    backgroundColor: COLORS.background,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: COLORS.primary,
-    textAlign: 'center',
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: COLORS.primary,
-    marginHorizontal: SPACING.sm,
-  },
-  ageInputDisabled: {
-    borderColor: COLORS.textMuted,
-    color: COLORS.textMuted,
-  },
-  ageSummary: {
-    marginTop: SPACING.md,
-    paddingTop: SPACING.md,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.background,
-    alignItems: 'center',
-  },
-  ageSummaryText: {
-    ...FONTS.body,
-    color: COLORS.textMuted,
     textAlign: 'center',
   },
-  slider: {
+  sublabel: {
+    ...FONTS.body,
+    color: COLORS.text,
+    marginBottom: SPACING.xs,
+  },
+  sliderWrap: {
     width: '100%',
-    height: 40,
+    marginVertical: SPACING.sm,
   },
-  distanceValue: {
+  valueLabel: {
     ...FONTS.h3,
-    color: COLORS.primary,
+    color: COLORS.accent,
     textAlign: 'center',
-    marginBottom: SPACING.md,
+    marginTop: SPACING.sm,
   },
-  distanceLabels: {
+  rangeLabels: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    marginTop: SPACING.xs,
   },
-  distanceLabel: {
+  rangeLabel: {
     ...FONTS.caption,
     color: COLORS.textMuted,
   },
@@ -468,50 +307,6 @@ const styles = StyleSheet.create({
   },
   disabledButton: {
     backgroundColor: COLORS.surface,
-  },
-  // Cinsiyet filtresi stilleri
-  genderHint: {
-    ...FONTS.caption,
-    color: COLORS.textMuted,
-    marginBottom: SPACING.md,
-    textAlign: 'center',
-  },
-  genderOptions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: SPACING.sm,
-  },
-  genderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: SPACING.sm,
-    marginBottom: SPACING.sm,
-  },
-  genderOption: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-    borderRadius: 12,
-    paddingVertical: SPACING.lg,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  genderOptionActive: {
-    borderColor: COLORS.primary,
-    backgroundColor: 'rgba(255, 215, 0, 0.1)',
-  },
-  genderOptionDisabled: {
-    opacity: 0.5,
-  },
-  genderText: {
-    ...FONTS.body,
-    color: COLORS.textMuted,
-    fontWeight: '500',
-  },
-  genderTextActive: {
-    color: COLORS.primary,
-    fontWeight: '600',
   },
 });
 

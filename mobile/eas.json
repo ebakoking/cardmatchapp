@@ -20,7 +20,8 @@
       "distribution": "store",
       "env": {
         "API_URL": "https://cardmatchapp.onrender.com",
-        "SOCKET_URL": "https://cardmatchapp.onrender.com"
+        "SOCKET_URL": "https://cardmatchapp.onrender.com",
+        "SHOW_TIMER_DEBUG_OVERLAY": "true"
       },
       "ios": {
         "resourceClass": "m-medium"
@@ -34,8 +35,8 @@
     "production": {
       "ios": {
         "appleId": "ebatikkurt@gmail.com",
-        "ascAppId": "PLACEHOLDER",
-        "appleTeamId": "PLACEHOLDER"
+        "ascAppId": "6758614512",
+        "appleTeamId": "D7427WU4AM"
       }
     }
   }

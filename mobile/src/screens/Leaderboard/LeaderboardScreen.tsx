@@ -20,6 +20,7 @@ import { SPACING } from '../../theme/spacing';
 import { api } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import ProfilePhoto from '../../components/ProfilePhoto';
+import { getPhotoUrl } from '../../utils/photoUrl';
 
 const { width } = Dimensions.get('window');
 
@@ -243,7 +244,7 @@ const LeaderboardScreen: React.FC<Props> = () => {
         
         <View style={styles.avatarContainer}>
           {item.profilePhoto ? (
-            <ProfilePhoto uri={item.profilePhoto} size={48} />
+            <ProfilePhoto uri={getPhotoUrl(item.profilePhoto)} size={48} />
           ) : (
             <View style={[styles.avatarCircle, { backgroundColor: avatar.color }]}>
               <Text style={styles.avatarEmoji}>{avatar.emoji}</Text>

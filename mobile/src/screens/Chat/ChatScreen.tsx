@@ -31,6 +31,8 @@ import { SPACING } from '../../theme/spacing';
 import { getSocket } from '../../services/socket';
 import { api } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useIAPContext } from '../../context/IAPContext';
+import { DIAMOND_AMOUNT_TO_PRODUCT_ID } from '../../constants/iapProducts';
 import MessageBubble from '../../components/MessageBubble';
 import PhotoViewModal from '../../components/PhotoViewModal';
 import VideoPreview from '../../components/VideoPreview';
@@ -75,9 +77,9 @@ const GIFT_OPTIONS = [
 
 // Hızlı satın alma seçenekleri (HomeScreen ile aynı)
 const PURCHASE_OPTIONS = [
-  { tokens: 50, price: '49,90 TL', popular: false },
-  { tokens: 100, price: '89,90 TL', popular: true },
-  { tokens: 250, price: '199,90 TL', popular: false },
+  { tokens: 50, price: '49,99 TL', popular: false },
+  { tokens: 100, price: '79,99 TL', popular: true },
+  { tokens: 250, price: '149,99 TL', popular: false },
 ];
 
 interface ChatMessage {
@@ -85,6 +87,7 @@ interface ChatMessage {
   senderId: string;
   content?: string | null;
   mediaUrl?: string | null;
+  thumbnailUrl?: string | null; // Video thumbnail (match chat)
   mediaType?: string | null;
   messageType?: 'TEXT' | 'MEDIA' | 'TOKEN_GIFT' | 'SYSTEM';
   tokenAmount?: number;
@@ -114,6 +117,7 @@ const STAGE_THRESHOLDS = [0, 10, 20, 30, 40];
 const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   const { sessionId, partnerNickname, partnerId } = route.params;
   const { user, updateTokenBalance, instantBalance } = useAuth();
+  const { isReady: iapReady, purchaseItem, finishTransaction } = useIAPContext();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [stage, setStage] = useState(1);
@@ -360,10 +364,10 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   // Input değiştiğinde typing event gönder
   const handleInputChange = (text: string) => {
     setInput(text);
-    
+
     const socket = getSocket();
     socket.emit('chat:typing', { sessionId, userId: user?.id, isTyping: true });
-    
+
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
     }
@@ -372,217 +376,252 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     }, 2000);
   };
 
+  // 🔒 MEMORY LEAK FIX: Handler'ları useCallback ile tanımla
+  const handleChatMessage = useCallback((msg: ChatMessage & { chatSessionId?: string }) => {
+    if (msg.chatSessionId && msg.chatSessionId !== sessionId) return;
+    setMessages((prev) => [...prev, msg]);
+    if (msg.senderId !== user?.id) {
+      Vibration.vibrate(30);
+    }
+  }, [sessionId, user?.id]);
+
+  const handleChatTyping = useCallback((payload: { userId: string; isTyping: boolean }) => {
+    if (payload.userId !== user?.id) {
+      setIsPartnerTyping(payload.isTyping);
+    }
+  }, [user?.id]);
+
+  const handleStageAdvanced = useCallback((payload: { newStage: number; features: string[] }) => {
+    console.log('[ChatScreen] stage:advanced from server:', payload);
+    setStage(payload.newStage);
+    Vibration.vibrate([0, 50, 100, 50]);
+  }, []);
+
+  const handleChatEnded = useCallback((payload: { sessionId: string; reason: string; message: string }) => {
+    console.log('[ChatScreen] chat:ended received:', payload);
+    if (payload.sessionId !== sessionId) return;
+    if (isEnded) return;
+    setIsEnded(true);
+    setChatEndReason(payload.reason);
+
+    // Değerlendirme modalını göster
+    if (payload.reason !== 'self') {
+      Vibration.vibrate(200);
+      setRatingModalVisible(true);
+    }
+  }, [sessionId, isEnded]);
+
+  const handleGiftReceived = useCallback((payload: { fromUserId: string; amount: number; fromNickname: string; newBalance: number; messageId: string }) => {
+    console.log('[ChatScreen] 🎁 gift:received - newBalance:', payload.newBalance);
+    Vibration.vibrate([0, 100, 50, 100]);
+
+    // 🚀 ANLIK: Bakiyeyi hemen güncelle
+    if (payload.newBalance !== undefined) {
+      console.log('[ChatScreen] 💰 Updating balance to:', payload.newBalance);
+      updateTokenBalance(payload.newBalance);
+    }
+
+    // Animasyonu göster
+    setGiftAnimationType('received');
+    setGiftAnimationAmount(payload.amount);
+    setShowGiftAnimation(true);
+
+    // Animasyon
+    giftAnimationScale.setValue(0);
+    giftAnimationOpacity.setValue(0);
+    Animated.parallel([
+      Animated.spring(giftAnimationScale, {
+        toValue: 1,
+        friction: 4,
+        tension: 100,
+        useNativeDriver: true,
+      }),
+      Animated.timing(giftAnimationOpacity, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+    ]).start();
+
+    // 3 saniye sonra kapat
+    setTimeout(() => {
+      Animated.timing(giftAnimationOpacity, {
+        toValue: 0,
+        duration: 300,
+        useNativeDriver: true,
+      }).start(() => setShowGiftAnimation(false));
+    }, 3000);
+  }, [updateTokenBalance, giftAnimationScale, giftAnimationOpacity]);
+
+  const handleGiftSent = useCallback((payload: { toUserId: string; amount: number; newBalance: number; messageId: string }) => {
+    console.log('[ChatScreen] 💸 gift:sent confirmed - newBalance:', payload.newBalance);
+
+    // Server'dan gelen gerçek bakiye ile senkronize et
+    if (payload.newBalance !== undefined) {
+      console.log('[ChatScreen] 💰 Syncing balance to:', payload.newBalance);
+      updateTokenBalance(payload.newBalance);
+    }
+
+    // Animasyonu göster
+    setGiftAnimationType('sent');
+    setGiftAnimationAmount(payload.amount);
+    setShowGiftAnimation(true);
+
+    // Animasyon
+    giftAnimationScale.setValue(0);
+    giftAnimationOpacity.setValue(0);
+    Animated.parallel([
+      Animated.spring(giftAnimationScale, {
+        toValue: 1,
+        friction: 4,
+        tension: 100,
+        useNativeDriver: true,
+      }),
+      Animated.timing(giftAnimationOpacity, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+    ]).start();
+
+    // 2 saniye sonra kapat
+    setTimeout(() => {
+      Animated.timing(giftAnimationOpacity, {
+        toValue: 0,
+        duration: 300,
+        useNativeDriver: true,
+      }).start(() => setShowGiftAnimation(false));
+    }, 2000);
+  }, [updateTokenBalance, giftAnimationScale, giftAnimationOpacity]);
+
+  const handleMediaViewed = useCallback((payload: any) => {
+    console.log('========================================');
+    console.log('[ChatScreen] DEBUG media:viewed received:', payload);
+    console.log('========================================');
+  }, []);
+
+  const handleTokenSpent = useCallback((payload: any) => {
+    console.log('========================================');
+    console.log('[ChatScreen] DEBUG token:spent received:', payload);
+    console.log('========================================');
+  }, []);
+
+  const handleSocketError = useCallback((payload: any) => {
+    console.log('========================================');
+    console.log('[ChatScreen] DEBUG socket error received:', payload);
+    console.log('========================================');
+  }, []);
+
+  const handleGiftError = useCallback((payload: { code: string; message: string; balance?: number; required?: number; disabled?: boolean }) => {
+    console.log('[ChatScreen] gift:error:', payload);
+
+    if (payload.code === 'FEATURE_DISABLED' || payload.disabled) {
+      setTokenGiftEnabled(false);
+      setTokenGiftDisabledMessage(payload.message);
+      Alert.alert('Bakım', payload.message);
+      return;
+    }
+
+    if (payload.code === 'INSUFFICIENT_BALANCE') {
+      Alert.alert(
+        'Yetersiz Bakiye',
+        `${payload.required} elmas gerekiyor.\nBakiyeniz: ${payload.balance || 0}`,
+        [
+          { text: 'İptal', style: 'cancel' },
+          { text: 'Elmas Satın Al', onPress: () => setGiftModalVisible(true) },
+        ],
+      );
+    } else {
+      Alert.alert('Hata', payload.message);
+    }
+  }, []);
+
+  const handleFriendInfo = useCallback((payload: { message: string }) => {
+    console.log('[ChatScreen] friend:info:', payload);
+    Alert.alert('Arkadaşlık', payload.message);
+  }, []);
+
+  const handleFriendAccepted = useCallback((payload: { friendshipId: string; user1Id: string; user2Id: string }) => {
+    console.log('[ChatScreen] friend:accepted:', payload);
+    if (payload.user1Id === user?.id || payload.user2Id === user?.id) {
+      setFriendRequestSent(true);
+      Vibration.vibrate([0, 100, 50, 100, 50, 100]);
+      const systemMessage: ChatMessage = {
+        id: `system-friend-${Date.now()}`,
+        senderId: 'system',
+        isSystem: true,
+        systemType: 'friend',
+        content: `🎉 Artık arkadaşsınız!`,
+      };
+      setMessages((prev) => [...prev, systemMessage]);
+    }
+  }, [user?.id]);
+
+  const handleMediaDeleted = useCallback((payload: { messageId: string; deletedBy: string }) => {
+    console.log('[ChatScreen] media:deleted:', payload);
+    setMessages(prev => prev.filter(m => m.id !== payload.messageId));
+  }, []);
+
+  // 🔒 MEMORY LEAK FIX: useEffect ile handler'ları bağla
   useEffect(() => {
     const socket = getSocket();
     socket.emit('chat:join', { sessionId, userId: user?.id });
 
-    socket.on('chat:message', (msg: ChatMessage & { chatSessionId?: string }) => {
-      if (msg.chatSessionId && msg.chatSessionId !== sessionId) return;
-      setMessages((prev) => [...prev, msg]);
-      if (msg.senderId !== user?.id) {
-        Vibration.vibrate(30);
-      }
-    });
-
-    socket.on('chat:typing', (payload: { userId: string; isTyping: boolean }) => {
-      if (payload.userId !== user?.id) {
-        setIsPartnerTyping(payload.isTyping);
-      }
-    });
-
-    socket.on('stage:advanced', (payload: { newStage: number; features: string[] }) => {
-      console.log('[ChatScreen] stage:advanced from server:', payload);
-      setStage(payload.newStage);
-      Vibration.vibrate([0, 50, 100, 50]);
-    });
-
-    socket.on('chat:ended', (payload: { sessionId: string; reason: string; message: string }) => {
-      console.log('[ChatScreen] chat:ended received:', payload);
-      if (payload.sessionId !== sessionId) return;
-      if (isEnded) return;
-      setIsEnded(true);
-      setChatEndReason(payload.reason);
-      
-      // Değerlendirme modalını göster
-      if (payload.reason !== 'self') {
-        Vibration.vibrate(200);
-        setRatingModalVisible(true);
-      }
-    });
-
-    // Hediye alındığında - bakiye ve animasyon güncelle
-    socket.on('gift:received', (payload: { fromUserId: string; amount: number; fromNickname: string; newBalance: number; messageId: string }) => {
-      console.log('[ChatScreen] 🎁 gift:received - newBalance:', payload.newBalance);
-      Vibration.vibrate([0, 100, 50, 100]);
-      
-      // 🚀 ANLIK: Bakiyeyi hemen güncelle
-      if (payload.newBalance !== undefined) {
-        console.log('[ChatScreen] 💰 Updating balance to:', payload.newBalance);
-        updateTokenBalance(payload.newBalance);
-      }
-      
-      // Animasyonu göster
-      setGiftAnimationType('received');
-      setGiftAnimationAmount(payload.amount);
-      setShowGiftAnimation(true);
-      
-      // Animasyon
-      giftAnimationScale.setValue(0);
-      giftAnimationOpacity.setValue(0);
-      Animated.parallel([
-        Animated.spring(giftAnimationScale, {
-          toValue: 1,
-          friction: 4,
-          tension: 100,
-          useNativeDriver: true,
-        }),
-        Animated.timing(giftAnimationOpacity, {
-          toValue: 1,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-      ]).start();
-      
-      // 3 saniye sonra kapat
-      setTimeout(() => {
-        Animated.timing(giftAnimationOpacity, {
-          toValue: 0,
-          duration: 300,
-          useNativeDriver: true,
-        }).start(() => setShowGiftAnimation(false));
-      }, 3000);
-    });
-
-    // Hediye gönderildiğinde - Server onayı (bakiye zaten optimistic olarak düşürüldü)
-    socket.on('gift:sent', (payload: { toUserId: string; amount: number; newBalance: number; messageId: string }) => {
-      console.log('[ChatScreen] 💸 gift:sent confirmed - newBalance:', payload.newBalance);
-      
-      // Server'dan gelen gerçek bakiye ile senkronize et
-      if (payload.newBalance !== undefined) {
-        console.log('[ChatScreen] 💰 Syncing balance to:', payload.newBalance);
-        updateTokenBalance(payload.newBalance);
-      }
-      
-      // Animasyonu göster
-      setGiftAnimationType('sent');
-      setGiftAnimationAmount(payload.amount);
-      setShowGiftAnimation(true);
-      
-      // Animasyon
-      giftAnimationScale.setValue(0);
-      giftAnimationOpacity.setValue(0);
-      Animated.parallel([
-        Animated.spring(giftAnimationScale, {
-          toValue: 1,
-          friction: 4,
-          tension: 100,
-          useNativeDriver: true,
-        }),
-        Animated.timing(giftAnimationOpacity, {
-          toValue: 1,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-      ]).start();
-      
-      // 2 saniye sonra kapat
-      setTimeout(() => {
-        Animated.timing(giftAnimationOpacity, {
-          toValue: 0,
-          duration: 300,
-          useNativeDriver: true,
-        }).start(() => setShowGiftAnimation(false));
-      }, 2000);
-    });
-
-    // DEBUG: Media view response listeners
-    socket.on('media:viewed', (payload: any) => {
-      console.log('========================================');
-      console.log('[ChatScreen] DEBUG media:viewed received:', payload);
-      console.log('========================================');
-    });
-    
-    socket.on('token:spent', (payload: any) => {
-      console.log('========================================');
-      console.log('[ChatScreen] DEBUG token:spent received:', payload);
-      console.log('========================================');
-    });
-    
-    socket.on('error', (payload: any) => {
-      console.log('========================================');
-      console.log('[ChatScreen] DEBUG socket error received:', payload);
-      console.log('========================================');
-    });
-
-    socket.on('gift:error', (payload: { code: string; message: string; balance?: number; required?: number; disabled?: boolean }) => {
-      console.log('[ChatScreen] gift:error:', payload);
-      
-      if (payload.code === 'FEATURE_DISABLED' || payload.disabled) {
-        setTokenGiftEnabled(false);
-        setTokenGiftDisabledMessage(payload.message);
-        Alert.alert('Bakım', payload.message);
-        return;
-      }
-      
-      if (payload.code === 'INSUFFICIENT_BALANCE') {
-        Alert.alert(
-          'Yetersiz Bakiye',
-          `${payload.required} elmas gerekiyor.\nBakiyeniz: ${payload.balance || 0}`,
-          [
-            { text: 'İptal', style: 'cancel' },
-            { text: 'Elmas Satın Al', onPress: () => setGiftModalVisible(true) },
-          ],
-        );
-      } else {
-        Alert.alert('Hata', payload.message);
-      }
-    });
-
-    socket.on('friend:info', (payload: { message: string }) => {
-      console.log('[ChatScreen] friend:info:', payload);
-      Alert.alert('Arkadaşlık', payload.message);
-    });
-
-    socket.on('friend:accepted', (payload: { friendshipId: string; user1Id: string; user2Id: string }) => {
-      console.log('[ChatScreen] friend:accepted:', payload);
-      if (payload.user1Id === user?.id || payload.user2Id === user?.id) {
-        setFriendRequestSent(true);
-        Vibration.vibrate([0, 100, 50, 100, 50, 100]);
-        const systemMessage: ChatMessage = {
-          id: `system-friend-${Date.now()}`,
-          senderId: 'system',
-          isSystem: true,
-          systemType: 'friend',
-          content: `🎉 Artık arkadaşsınız!`,
-        };
-        setMessages((prev) => [...prev, systemMessage]);
-      }
-    });
-
-    // Medya silindi (Snapchat tarzı - diğer kullanıcı görüntüledi)
-    socket.on('media:deleted', (payload: { messageId: string; deletedBy: string }) => {
-      console.log('[ChatScreen] media:deleted:', payload);
-      setMessages(prev => prev.filter(m => m.id !== payload.messageId));
-    });
+    // Handler'ları bağla
+    socket.on('chat:message', handleChatMessage);
+    socket.on('chat:typing', handleChatTyping);
+    socket.on('stage:advanced', handleStageAdvanced);
+    socket.on('chat:ended', handleChatEnded);
+    socket.on('gift:received', handleGiftReceived);
+    socket.on('gift:sent', handleGiftSent);
+    socket.on('media:viewed', handleMediaViewed);
+    socket.on('token:spent', handleTokenSpent);
+    socket.on('error', handleSocketError);
+    socket.on('gift:error', handleGiftError);
+    socket.on('friend:info', handleFriendInfo);
+    socket.on('friend:accepted', handleFriendAccepted);
+    socket.on('media:deleted', handleMediaDeleted);
 
     return () => {
       console.log('[ChatScreen] Cleanup - emitting chat:leave');
       socket.emit('chat:leave', { sessionId, userId: user?.id });
-      socket.off('chat:message');
-      socket.off('chat:typing');
-      socket.off('stage:advanced');
-      socket.off('chat:ended');
-      socket.off('gift:received');
-      socket.off('gift:sent');
-      socket.off('gift:error');
-      socket.off('friend:info');
-      socket.off('friend:accepted');
-      socket.off('media:deleted');
+
+      // Handler'ları kaldır (aynı reference ile)
+      socket.off('chat:message', handleChatMessage);
+      socket.off('chat:typing', handleChatTyping);
+      socket.off('stage:advanced', handleStageAdvanced);
+      socket.off('chat:ended', handleChatEnded);
+      socket.off('gift:received', handleGiftReceived);
+      socket.off('gift:sent', handleGiftSent);
+      socket.off('media:viewed', handleMediaViewed);
+      socket.off('token:spent', handleTokenSpent);
+      socket.off('error', handleSocketError);
+      socket.off('gift:error', handleGiftError);
+      socket.off('friend:info', handleFriendInfo);
+      socket.off('friend:accepted', handleFriendAccepted);
+      socket.off('media:deleted', handleMediaDeleted);
+
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current);
       }
     };
-  }, [sessionId, user?.id]);
+  }, [
+    sessionId,
+    user?.id,
+    handleChatMessage,
+    handleChatTyping,
+    handleStageAdvanced,
+    handleChatEnded,
+    handleGiftReceived,
+    handleGiftSent,
+    handleMediaViewed,
+    handleTokenSpent,
+    handleSocketError,
+    handleGiftError,
+    handleFriendInfo,
+    handleFriendAccepted,
+    handleMediaDeleted,
+  ]);
 
   // Otomatik stage geçişi ve timer
   useEffect(() => {
@@ -680,15 +719,18 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
     );
   };
 
-  // Dosya yükleme fonksiyonu
-  const uploadFile = async (uri: string, type: 'photo' | 'video'): Promise<string | null> => {
+  // Dosya yükleme: photo => url string, video => { url, thumbnailUrl?, duration? }
+  const uploadFile = async (
+    uri: string,
+    type: 'photo' | 'video'
+  ): Promise<string | { url: string; thumbnailUrl?: string; duration?: number } | null> => {
     try {
       setIsUploading(true);
-      
+
       const formData = new FormData();
       const ext = type === 'video' ? '.mp4' : '.jpg';
       const mimeType = type === 'video' ? 'video/mp4' : 'image/jpeg';
-      
+
       formData.append(type, {
         uri: uri,
         type: mimeType,
@@ -697,11 +739,10 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
       const apiBaseUrl = api.defaults.baseURL || '';
       console.log(`[ChatScreen] Uploading ${type} to ${apiBaseUrl}/api/upload/${type}`);
-      
+
       const response = await fetch(`${apiBaseUrl}/api/upload/${type}`, {
         method: 'POST',
         body: formData,
-        // Content-Type header'ı FormData için otomatik ayarlanır - manuel ayarlamayın!
       });
 
       console.log(`[ChatScreen] Upload response status: ${response.status}`);
@@ -713,8 +754,12 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
       }
 
       const data = await response.json();
-      console.log(`[ChatScreen] ${type} uploaded successfully:`, data.url);
       setIsUploading(false);
+      if (type === 'video') {
+        console.log(`[ChatScreen] Video uploaded:`, data.url, data.thumbnailUrl ? '(with thumbnail)' : '');
+        return { url: data.url, thumbnailUrl: data.thumbnailUrl, duration: data.duration };
+      }
+      console.log(`[ChatScreen] ${type} uploaded successfully:`, data.url);
       return data.url;
     } catch (error) {
       console.error(`[ChatScreen] ${type} upload error:`, error);
@@ -898,26 +943,31 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
 
   const handleVideoSend = async () => {
     if (!pendingVideoUri) return;
-    
+
     setVideoPreviewVisible(false);
-    
-    // Önce dosyayı yükle
-    const uploadedUrl = await uploadFile(pendingVideoUri, 'video');
-    
-    if (!uploadedUrl) {
+
+    const result = await uploadFile(pendingVideoUri, 'video');
+
+    if (!result) {
       Alert.alert('Hata', 'Video yüklenemedi. Lütfen tekrar deneyin.');
       setPendingVideoUri(null);
       return;
     }
+
+    const url = typeof result === 'string' ? result : result.url;
+    const thumbnailUrl = typeof result === 'object' ? result.thumbnailUrl : undefined;
+    const duration = typeof result === 'object' ? result.duration : undefined;
 
     Vibration.vibrate(30);
     const socket = getSocket();
     socket.emit('media:video', {
       sessionId,
       senderId: user?.id,
-      url: uploadedUrl,
+      url,
+      thumbnailUrl,
+      duration,
     });
-    
+
     setPendingVideoUri(null);
   };
 
@@ -1071,22 +1121,44 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
   };
 
   const handleQuickPurchase = (tokens: number) => {
+    const productId = DIAMOND_AMOUNT_TO_PRODUCT_ID[tokens];
+    if (!productId) return;
+    if (!iapReady) {
+      Alert.alert('Bilgi', 'Mağaza hazır değil. Lütfen kısa süre sonra tekrar deneyin.');
+      return;
+    }
+    const option = PURCHASE_OPTIONS.find(o => o.tokens === tokens);
+    const price = option?.price ?? '';
     Alert.alert(
       'Elmas Satın Al',
-      `${tokens} elmas satın almak istediğinize emin misiniz?`,
+      `${tokens} elmas satın almak istediğinize emin misiniz?\n\n${price}`,
       [
         { text: 'İptal', style: 'cancel' },
         {
           text: 'Satın Al',
-          onPress: () => {
-            const socket = getSocket();
-            socket.emit('tokens:mock_purchase', {
-              userId: user?.id,
-              amount: tokens,
-            });
-            Vibration.vibrate([0, 50, 100, 50]);
-            Alert.alert('Başarılı', `${tokens} elmas hesabınıza eklendi!`);
+          onPress: async () => {
             setGiftModalVisible(false);
+            try {
+              const purchase = await purchaseItem(productId);
+              const transactionId = (purchase as any).transactionId ?? (purchase as any).purchaseToken ?? '';
+              const res = await api.post<{ success: boolean; data: { newBalance: number } }>(
+                '/api/user/purchase-tokens',
+                { amount: tokens, transactionId }
+              );
+              if (res.data.success) {
+                await finishTransaction(purchase, true);
+                if (res.data.data?.newBalance !== undefined) {
+                  updateTokenBalance(res.data.data.newBalance);
+                }
+                Vibration.vibrate([0, 50, 100, 50]);
+                Alert.alert('Başarılı! 💎', `${tokens} elmas hesabınıza eklendi!`);
+              } else {
+                Alert.alert('Hata', 'Satın alma sunucuda işlenemedi. Destek ile iletişime geçin.');
+              }
+            } catch (error: any) {
+              if (error?.message?.includes('iptal') || error?.message?.toLowerCase().includes('cancel')) return;
+              Alert.alert('Hata', error?.message ?? 'Satın alma sırasında bir hata oluştu. Lütfen tekrar deneyin.');
+            }
           },
         },
       ]
@@ -1959,6 +2031,7 @@ const ChatScreen: React.FC<Props> = ({ route, navigation }) => {
               }, 500); // Kısa gecikme ile animasyonlu kapanma
             }}
             imageUrl={selectedMedia.mediaUrl || ''}
+            thumbnailUrl={selectedMedia.thumbnailUrl ?? undefined}
             messageId={selectedMedia.id}
             mediaType={selectedMedia.mediaType === 'video' ? 'video' : 'photo'}
             isMine={selectedMedia.senderId === user?.id}

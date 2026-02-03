@@ -42,7 +42,6 @@ const VerificationVideoScreen: React.FC<Props> = ({ navigation }) => {
         type: 'video/mp4',
       });
       await api.post('/api/user/me/verification-video', form, {
-        headers: { 'Content-Type': 'multipart/form-data' },
       });
       setUploading(false);
       navigation.replace('Tutorial');

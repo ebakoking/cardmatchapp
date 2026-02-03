@@ -774,27 +774,6 @@ router.get('/me', async (req, res) => {
       });
     }
 
-    // Kadın/Erkek tercihi süresi dolmuşsa BOTH yap (ilk girişte Herkes kalır)
-    const u = user as any;
-    if ((u.filterGender === 'MALE' || u.filterGender === 'FEMALE') && (!u.filterGenderExpiresAt || new Date(u.filterGenderExpiresAt) <= new Date())) {
-      const updated = await prisma.user.update({
-        where: { id: decoded.userId },
-        data: { filterGender: 'BOTH', filterGenderExpiresAt: null },
-        include: {
-          profilePhotos: { orderBy: { order: 'asc' } },
-        },
-      });
-      return res.json({
-        success: true,
-        data: {
-          user: sanitizeUser(updated),
-          isProfileComplete: updated.profileComplete || isProfileComplete(updated),
-          onboardingStep: updated.onboardingStep || 1,
-          status: updated.status,
-        },
-      });
-    }
-    
     return res.json({
       success: true,
       data: {

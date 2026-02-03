@@ -148,7 +148,8 @@ model User {
   filterMaxAge           Int           @default(99)
   filterMaxDistance      Int           @default(160)  // km cinsinden
   filterGender           String        @default("BOTH") // MALE, FEMALE, BOTH - 50 elmas ile Kadın/Erkek, 30 dk geçerli
-  filterGenderExpiresAt  DateTime?                        // Kadın/Erkek tercihi bitiş (30 dk)
+  filterGenderActive     Boolean       @default(false)  // Cinsiyet filtresi aktif mi?
+  filterGenderExpiresAt  DateTime?                       // Kadın/Erkek tercihi bitiş (30 dk)
   preferHighSpark        Boolean       @default(false)  // Prime: en yüksek sparklı kişilerle eşleş (aç/kapa)
   tokenBalance           Int           @default(0)
   monthlyTokensReceived  Int           @default(0)  // Hediye olarak aldığı tokenlar
@@ -206,6 +207,7 @@ model User {
   tokenPurchases         TokenPurchase[]
   redeemRequests         RedeemRequest[]
   rewardClaims           RewardClaim[]
+  genderFilterPurchases  GenderFilterPurchase[] @relation("GenderFilterPurchases")
 
   // ============ PERFORMANS İNDEKSLERİ ============
   @@index([status])                           // Aktif kullanıcı sorguları
@@ -275,12 +277,13 @@ model SparkTransaction {
 }
 
 model VerificationVideo {
-  id        String   @id @default(uuid())
-  userId    String   @unique
-  url       String
-  createdAt DateTime @default(now())
+  id           String   @id @default(uuid())
+  userId       String   @unique
+  url          String
+  thumbnailUrl String?  // 🎬 Video thumbnail URL
+  createdAt    DateTime @default(now())
 
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 // ============ SELFİE DOĞRULAMA SİSTEMİ ============
@@ -446,6 +449,7 @@ model Message {
   senderId      String
   content       String?
   mediaUrl      String?
+  thumbnailUrl  String?     // 🎬 Video thumbnail URL (video için)
   mediaType     String?     // 'photo' | 'video' | 'voice'
   messageType   MessageType @default(TEXT)  // TEXT, MEDIA, TOKEN_GIFT, SYSTEM
   tokenAmount   Int?        // TOKEN_GIFT için hediye edilen miktar
@@ -578,6 +582,7 @@ model FriendChatMessage {
   senderId     String
   content      String?
   mediaUrl     String?
+  thumbnailUrl String?     // 🎬 Video thumbnail URL (video için)
   mediaType    String?
   locked       Boolean     @default(false) // Medya kilitli mi?
   isFirstFree  Boolean     @default(false) // Bu gönderenin ilk medyası mı?
@@ -709,5 +714,23 @@ model BoostPurchase {
   @@index([userId])
   @@index([activatedAt])
   @@index([transactionId])
+}
+
+// ============ CİNSİYET FİLTRESİ SATIN ALMA GEÇMİŞİ ============
+model GenderFilterPurchase {
+  id            String   @id @default(uuid())
+  userId        String
+  filterType    String   // 'MALE' | 'FEMALE' (BOTH ücretsiz)
+  tokenCost     Int      // 50 elmas
+  durationMinutes Int    // 30 dakika
+  activatedAt   DateTime @default(now())
+  expiresAt     DateTime
+  createdAt     DateTime @default(now())
+
+  user          User     @relation("GenderFilterPurchases", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([activatedAt])
+  @@index([expiresAt])
 }
 

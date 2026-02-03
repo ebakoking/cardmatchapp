@@ -93,7 +93,6 @@ const PhotoUploadScreen: React.FC<Props> = ({ navigation }) => {
         }
         console.log('[PhotoUpload] Uploading photo with type: CORE');
         await api.post('/api/user/me/photos', form, {
-          headers: { 'Content-Type': 'multipart/form-data' },
         });
       }
       navigation.replace('BioInput');

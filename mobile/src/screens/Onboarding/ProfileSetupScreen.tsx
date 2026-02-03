@@ -70,11 +70,13 @@ const ProfileSetupScreen: React.FC<Props> = ({ navigation }) => {
   // Zodiac kartı animasyonu
   const zodiacAnimValue = useRef(new Animated.Value(0)).current;
 
-  // Konum izni al (arka planda, sayfa açılınca)
+  // Konum izni al — sadece 1 kere iste: önce mevcut durumu kontrol et
   const requestLocation = useCallback(async () => {
     try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      
+      let { status } = await Location.getForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        status = (await Location.requestForegroundPermissionsAsync()).status;
+      }
       if (status !== 'granted') {
         setShowLocationModal(true);
         return false;

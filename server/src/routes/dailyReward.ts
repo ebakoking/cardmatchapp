@@ -167,97 +167,106 @@ router.post('/claim', authMiddleware, async (req: any, res) => {
   try {
     const userId = req.user.userId;
 
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        lastDailyRewardAt: true,
-        currentStreak: true,
-        longestStreak: true,
-        tokenBalance: true,
-      },
-    });
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: { code: 'USER_NOT_FOUND', message: 'Kullanıcı bulunamadı' },
-      });
-    }
-
     const todayStart = getTodayStart();
-    const lastReward = user.lastDailyRewardAt;
+    const yesterdayStart = getYesterdayStart();
 
-    // Bugün zaten ödül aldı mı?
-    if (lastReward && new Date(lastReward) >= todayStart) {
-      return res.status(400).json({
-        success: false,
-        error: { code: 'ALREADY_CLAIMED', message: 'Bugünkü ödülünü zaten aldın!' },
+    // 🔒 RACE CONDITION FIX: Tüm işlemi transaction içinde yap
+    const result = await prisma.$transaction(async (tx) => {
+      // User'ı lock ile al (FOR UPDATE)
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: {
+          lastDailyRewardAt: true,
+          currentStreak: true,
+          longestStreak: true,
+          tokenBalance: true,
+        },
       });
-    }
 
-    // Streak hesapla
-    let currentStreak = user.currentStreak || 0;
-    
-    if (lastReward) {
-      const yesterdayStart = getYesterdayStart();
-      if (new Date(lastReward) >= yesterdayStart) {
-        // Dün ödül almış, streak devam ediyor
-        currentStreak += 1;
+      if (!user) {
+        throw new Error('USER_NOT_FOUND');
+      }
+
+      const lastReward = user.lastDailyRewardAt;
+
+      // Bugün zaten ödül aldı mı? (Transaction içinde tekrar kontrol)
+      if (lastReward && new Date(lastReward) >= todayStart) {
+        throw new Error('ALREADY_CLAIMED');
+      }
+
+      // Streak hesapla
+      let currentStreak = user.currentStreak || 0;
+
+      if (lastReward) {
+        if (new Date(lastReward) >= yesterdayStart) {
+          // Dün ödül almış, streak devam ediyor
+          currentStreak += 1;
+        } else {
+          // Streak kırıldı, yeniden başla
+          currentStreak = 1;
+        }
       } else {
-        // Streak kırıldı, yeniden başla
+        // İlk kez ödül alıyor
         currentStreak = 1;
       }
-    } else {
-      // İlk kez ödül alıyor
-      currentStreak = 1;
-    }
 
-    // Streak 30 günü geçerse sıfırla (1 aylık döngü)
-    if (currentStreak > STREAK_DURATION_DAYS) {
-      currentStreak = 1;
-    }
-
-    // Ödül hesapla
-    let tokensEarned = 0;
-    let rewardLabel = '';
-    let isWeeklyBonus = false;
-
-    if (currentStreak <= 7) {
-      // İlk 7 gün: artan ödüller
-      const reward = STREAK_REWARDS[currentStreak - 1];
-      tokensEarned = reward.tokens;
-      rewardLabel = reward.label;
-    } else {
-      // 7. günden sonra: günlük 5 elmas
-      tokensEarned = DAILY_REWARD_AFTER_7;
-      rewardLabel = `${currentStreak}. Gün`;
-      
-      // Her hafta tamamlandığında (14, 21, 28. günler) bonus
-      if (currentStreak % 7 === 0) {
-        tokensEarned += WEEKLY_BONUS;
-        isWeeklyBonus = true;
-        rewardLabel = `${currentStreak}. Gün 🎉 Haftalık Bonus!`;
+      // Streak 30 günü geçerse sıfırla (1 aylık döngü)
+      if (currentStreak > STREAK_DURATION_DAYS) {
+        currentStreak = 1;
       }
-    }
 
-    // En uzun streak güncelle
-    const newLongestStreak = Math.max(user.longestStreak || 0, currentStreak);
+      // Ödül hesapla
+      let tokensEarned = 0;
+      let rewardLabel = '';
+      let isWeeklyBonus = false;
 
-    // Veritabanını güncelle
-    const updatedUser = await prisma.user.update({
-      where: { id: userId },
-      data: {
-        lastDailyRewardAt: new Date(),
+      if (currentStreak <= 7) {
+        // İlk 7 gün: artan ödüller
+        const reward = STREAK_REWARDS[currentStreak - 1];
+        tokensEarned = reward.tokens;
+        rewardLabel = reward.label;
+      } else {
+        // 7. günden sonra: günlük 5 elmas
+        tokensEarned = DAILY_REWARD_AFTER_7;
+        rewardLabel = `${currentStreak}. Gün`;
+
+        // Her hafta tamamlandığında (14, 21, 28. günler) bonus
+        if (currentStreak % 7 === 0) {
+          tokensEarned += WEEKLY_BONUS;
+          isWeeklyBonus = true;
+          rewardLabel = `${currentStreak}. Gün 🎉 Haftalık Bonus!`;
+        }
+      }
+
+      // En uzun streak güncelle
+      const newLongestStreak = Math.max(user.longestStreak || 0, currentStreak);
+
+      // Veritabanını güncelle
+      const updatedUser = await tx.user.update({
+        where: { id: userId },
+        data: {
+          lastDailyRewardAt: new Date(),
+          currentStreak,
+          longestStreak: newLongestStreak,
+          tokenBalance: { increment: tokensEarned },
+        },
+        select: {
+          tokenBalance: true,
+          currentStreak: true,
+          longestStreak: true,
+        },
+      });
+
+      return {
+        updatedUser,
+        tokensEarned,
+        rewardLabel,
         currentStreak,
-        longestStreak: newLongestStreak,
-        tokenBalance: { increment: tokensEarned },
-      },
-      select: {
-        tokenBalance: true,
-        currentStreak: true,
-        longestStreak: true,
-      },
+        isWeeklyBonus,
+      };
     });
+
+    const { updatedUser, tokensEarned, rewardLabel, currentStreak, isWeeklyBonus } = result;
 
     console.log(`[DailyReward] User ${userId} claimed ${tokensEarned} tokens (Day ${currentStreak}, Streak: ${currentStreak}, WeeklyBonus: ${isWeeklyBonus})`);
 
@@ -278,13 +287,29 @@ router.post('/claim', authMiddleware, async (req: any, res) => {
         longestStreak: updatedUser.longestStreak,
         newTokenBalance: updatedUser.tokenBalance,
         isWeeklyBonus,
-        message: isWeeklyBonus 
+        message: isWeeklyBonus
           ? `🎉 ${tokensEarned} elmas kazandın! (Haftalık bonus dahil!)`
           : `🎉 ${tokensEarned} elmas kazandın!`,
       },
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('[DailyReward] Claim error:', error);
+
+    // Transaction içinde fırlatılan custom hataları handle et
+    if (error.message === 'USER_NOT_FOUND') {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'USER_NOT_FOUND', message: 'Kullanıcı bulunamadı' },
+      });
+    }
+
+    if (error.message === 'ALREADY_CLAIMED') {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'ALREADY_CLAIMED', message: 'Bugünkü ödülünü zaten aldın!' },
+      });
+    }
+
     return res.status(500).json({
       success: false,
       error: { code: 'INTERNAL_ERROR', message: 'Bir hata oluştu' },

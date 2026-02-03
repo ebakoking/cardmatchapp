@@ -18,6 +18,11 @@ yarn.lock
 .env
 .env.*
 
+# Local / secret backups
+*.save
+mobile/bot.js.save
+mobile/claude-bot/
+
 # Prisma
 server/prisma/migrations
 

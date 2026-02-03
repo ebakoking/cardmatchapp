@@ -9,11 +9,8 @@ import {
   Alert,
   Image,
   ScrollView,
-  Dimensions,
+  useWindowDimensions,
 } from 'react-native';
-
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const MATCH_BUTTON_SIZE = Math.min(SCREEN_WIDTH * 0.55, 220);
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -22,25 +19,28 @@ import { ChatStackParamList } from '../../navigation';
 import { COLORS } from '../../theme/colors';
 import { FONTS } from '../../theme/fonts';
 import { SPACING } from '../../theme/spacing';
-import { useAuth } from '../../context/AuthContext';
+import { useAuth, type User } from '../../context/AuthContext';
+import { useIAPContext } from '../../context/IAPContext';
 import { getSocket } from '../../services/socket';
 import { api } from '../../services/api';
 import BoostButton from '../../components/BoostButton';
 import DailyRewardModal from '../../components/DailyRewardModal';
+import { GenderFilterBar } from '../../components/GenderFilterBar';
+import { DIAMOND_PACKAGE_TO_PRODUCT_ID, PRIME_PACKAGE_TO_PRODUCT_ID } from '../../constants/iapProducts';
 
-// Elmas satın alma seçenekleri
+// Elmas satın alma seçenekleri (Apple IAP fiyatları)
 const DIAMOND_PACKAGES = [
-  { id: 'diamond_50', quantity: 50, price: '49,90 TL', isPopular: false },
-  { id: 'diamond_100', quantity: 100, price: '89,90 TL', isPopular: true },
-  { id: 'diamond_250', quantity: 250, price: '199,90 TL', isPopular: false },
+  { id: 'diamond_50', quantity: 50, price: '49,99 TL', isPopular: false },
+  { id: 'diamond_100', quantity: 100, price: '79,99 TL', isPopular: true },
+  { id: 'diamond_250', quantity: 250, price: '149,99 TL', isPopular: false },
 ];
 
-// Prime abonelik seçenekleri
+// Prime abonelik seçenekleri (Apple IAP fiyatları)
 const PRIME_PACKAGES = [
   { 
     id: 'weekly', 
     name: 'Haftalık', 
-    price: '99,90 TL', 
+    price: '99,99 TL', 
     duration: '7 gün',
     badge: null,
     highlight: false,
@@ -49,7 +49,7 @@ const PRIME_PACKAGES = [
   { 
     id: 'monthly', 
     name: 'Aylık', 
-    price: '149,90 TL', 
+    price: '149,99 TL', 
     duration: '30 gün',
     badge: '⭐ En Popüler',
     highlight: true,
@@ -58,20 +58,24 @@ const PRIME_PACKAGES = [
   { 
     id: 'yearly', 
     name: 'Yıllık', 
-    price: '999,90 TL', 
+    price: '1499,99 TL', 
     duration: '12 ay',
     badge: '🏆 En Avantajlı',
     highlight: false,
-    subtext: 'Aylık 83 TL\'ye denk gelir',
+    subtext: 'Aylık 125 TL\'ye denk gelir',
   },
 ];
 
 type Props = NativeStackScreenProps<ChatStackParamList, 'HomeMain'>;
 
 const HomeScreen: React.FC<Props> = ({ navigation }) => {
-  const { user, updateUser, refreshProfile } = useAuth();
+  const { width: windowWidth } = useWindowDimensions();
+  const matchButtonSize = Math.min(windowWidth * 0.55, 220);
+  const { user, refreshProfile, instantBalance, updateTokenBalance } = useAuth();
+  const { isReady: iapReady, purchaseItem, finishTransaction } = useIAPContext();
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const boostGlowAnim = useRef(new Animated.Value(0.3)).current;
+  const boostAnimRef = useRef<Animated.CompositeAnimation | null>(null);
   
   // Modal states
   const [tokenModalVisible, setTokenModalVisible] = useState(false);
@@ -82,7 +86,7 @@ const HomeScreen: React.FC<Props> = ({ navigation }) => {
   // Boost state (API-driven)
   const [boostActive, setBoostActive] = useState(false);
   const [boostTimeLeft, setBoostTimeLeft] = useState(0); // seconds
-  
+
   // Load boost status from API
   const loadBoostStatus = async () => {
     try {
@@ -134,23 +138,21 @@ const HomeScreen: React.FC<Props> = ({ navigation }) => {
   }, [pulseAnim]);
 
   useEffect(() => {
-    // Boost glow animation
     if (boostActive) {
-      Animated.loop(
+      boostAnimRef.current = Animated.loop(
         Animated.sequence([
-          Animated.timing(boostGlowAnim, {
-            toValue: 1,
-            duration: 1000,
-            useNativeDriver: true,
-          }),
-          Animated.timing(boostGlowAnim, {
-            toValue: 0.3,
-            duration: 1000,
-            useNativeDriver: true,
-          }),
-        ]),
-      ).start();
+          Animated.timing(boostGlowAnim, { toValue: 1, duration: 1000, useNativeDriver: true }),
+          Animated.timing(boostGlowAnim, { toValue: 0.3, duration: 1000, useNativeDriver: true }),
+        ])
+      );
+      boostAnimRef.current.start();
+    } else {
+      boostAnimRef.current?.stop();
+      boostGlowAnim.setValue(0.3);
     }
+    return () => {
+      boostAnimRef.current?.stop();
+    };
   }, [boostActive, boostGlowAnim]);
 
   useEffect(() => {
@@ -168,6 +170,19 @@ const HomeScreen: React.FC<Props> = ({ navigation }) => {
       return () => clearInterval(timer);
     }
   }, [boostActive, boostTimeLeft]);
+
+  // Prime satın alma: server onayı (prime:purchased) gelince success modal aç
+  useEffect(() => {
+    const socket = getSocket();
+    const onPrimePurchased = () => {
+      setPrimeSuccessModalVisible(true);
+      refreshProfile();
+    };
+    socket.on('prime:purchased', onPrimePurchased);
+    return () => {
+      socket.off('prime:purchased', onPrimePurchased);
+    };
+  }, []);
 
   const formatBoostTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -205,8 +220,14 @@ const HomeScreen: React.FC<Props> = ({ navigation }) => {
   // Elmas satın alma state
   const [purchasingPackage, setPurchasingPackage] = useState<string | null>(null);
 
-  // Elmas satın alma
+  // Elmas satın alma (gerçek IAP)
   const handleDiamondPurchase = (pkg: typeof DIAMOND_PACKAGES[0]) => {
+    const productId = DIAMOND_PACKAGE_TO_PRODUCT_ID[pkg.id];
+    if (!productId) return;
+    if (!iapReady) {
+      Alert.alert('Bilgi', 'Mağaza hazır değil. Lütfen kısa süre sonra tekrar deneyin.');
+      return;
+    }
     Alert.alert(
       'Elmas Satın Al',
       `${pkg.quantity} elmas satın almak istediğinize emin misiniz?\n\n${pkg.price}`,
@@ -217,20 +238,25 @@ const HomeScreen: React.FC<Props> = ({ navigation }) => {
           onPress: async () => {
             setPurchasingPackage(pkg.id);
             try {
-              // TODO: Implement real IAP purchase here
-              const socket = getSocket();
-              socket.emit('tokens:mock_purchase', {
-                userId: user?.id,
-                amount: pkg.quantity,
-              });
-              
-              // Simulated delay for purchase
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              
-              setTokenModalVisible(false);
-              Alert.alert('Başarılı! 💎', `${pkg.quantity} elmas hesabınıza eklendi!`);
-            } catch (error) {
-              Alert.alert('Hata', 'Satın alma sırasında bir hata oluştu. Lütfen tekrar deneyin.');
+              const purchase = await purchaseItem(productId);
+              const transactionId = (purchase as any).transactionId ?? (purchase as any).purchaseToken ?? '';
+              const res = await api.post<{ success: boolean; data: { newBalance: number } }>(
+                '/api/user/purchase-tokens',
+                { amount: pkg.quantity, transactionId }
+              );
+              if (res.data.success) {
+                if (res.data.data?.newBalance !== undefined) {
+                  updateTokenBalance(res.data.data.newBalance);
+                }
+                await finishTransaction(purchase, true);
+                setTokenModalVisible(false);
+                Alert.alert('Başarılı! 💎', `${pkg.quantity} elmas hesabınıza eklendi!`);
+              } else {
+                Alert.alert('Hata', 'Satın alma sunucuda işlenemedi. Destek ile iletişime geçin.');
+              }
+            } catch (error: any) {
+              if (error?.message?.includes('iptal') || error?.message?.toLowerCase().includes('cancel')) return;
+              Alert.alert('Hata', error?.message ?? 'Satın alma sırasında bir hata oluştu. Lütfen tekrar deneyin.');
             } finally {
               setPurchasingPackage(null);
             }
@@ -244,8 +270,14 @@ const HomeScreen: React.FC<Props> = ({ navigation }) => {
   const [purchasingPrime, setPurchasingPrime] = useState<string | null>(null);
   const [primeSuccessModalVisible, setPrimeSuccessModalVisible] = useState(false);
 
-  // Prime abonelik satın alma
+  // Prime abonelik satın alma (gerçek IAP)
   const handlePrimePurchase = (pkg: typeof PRIME_PACKAGES[0]) => {
+    const productId = PRIME_PACKAGE_TO_PRODUCT_ID[pkg.id];
+    if (!productId) return;
+    if (!iapReady) {
+      Alert.alert('Bilgi', 'Mağaza hazır değil. Lütfen kısa süre sonra tekrar deneyin.');
+      return;
+    }
     Alert.alert(
       '👑 Prime Abonelik',
       `${pkg.name} Prime (${pkg.duration})\n\n${pkg.price}\n\nSatın almak istediğinize emin misiniz?`,
@@ -256,20 +288,20 @@ const HomeScreen: React.FC<Props> = ({ navigation }) => {
           onPress: async () => {
             setPurchasingPrime(pkg.id);
             try {
-              // TODO: Implement real IAP purchase
+              const purchase = await purchaseItem(productId, { type: 'subs' });
+              const transactionId = (purchase as any).transactionId ?? (purchase as any).purchaseToken ?? '';
               const socket = getSocket();
               socket.emit('prime:purchase', {
                 userId: user?.id,
                 packageId: pkg.id,
+                transactionId,
               });
-              
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              
+              await finishTransaction(purchase, false);
               setPrimeModalVisible(false);
-              // Temalı başarı modalı göster
-              setPrimeSuccessModalVisible(true);
-            } catch (error) {
-              Alert.alert('Hata', 'Satın alma sırasında bir hata oluştu. Lütfen tekrar deneyin.');
+              // Success modal server onayından sonra açılır (prime:purchased veya prime:updated dinleyicisi)
+            } catch (error: any) {
+              if (error?.message?.toLowerCase().includes('cancel') || error?.message?.toLowerCase().includes('iptal')) return;
+              Alert.alert('Hata', error?.message ?? 'Satın alma sırasında bir hata oluştu. Lütfen tekrar deneyin.');
             } finally {
               setPurchasingPrime(null);
             }
@@ -316,6 +348,9 @@ const HomeScreen: React.FC<Props> = ({ navigation }) => {
               <BoostButton onBoostActivated={handleBoostActivated} />
             </View>
 
+            {/* Gender Filter Bar - 50💎, 30 minutes */}
+            <GenderFilterBar />
+
             {/* Main CTA - EŞLEŞME BUL */}
             <Animated.View
               style={[
@@ -326,7 +361,7 @@ const HomeScreen: React.FC<Props> = ({ navigation }) => {
               <TouchableOpacity onPress={onMatchPress} activeOpacity={0.9}>
                 <LinearGradient
                   colors={COLORS.gradientPrimary}
-                  style={styles.matchButton}
+                  style={[styles.matchButton, { width: matchButtonSize, height: matchButtonSize, borderRadius: matchButtonSize / 2 }]}
                 >
                   <Ionicons name="shuffle" size={36} color="#FFF" style={styles.matchIcon} />
                   <Text style={styles.matchButtonText}>EŞLEŞME BUL</Text>
@@ -395,7 +430,7 @@ const HomeScreen: React.FC<Props> = ({ navigation }) => {
                 <Text style={styles.diamondModalTitle}>Elmas Satın Al</Text>
               </View>
               <Text style={styles.diamondModalBalance}>
-                Bakiyen: <Text style={styles.diamondBalanceValue}>{user?.tokenBalance || 0}</Text> elmas
+                Bakiyen: <Text style={styles.diamondBalanceValue}>{instantBalance ?? user?.tokenBalance ?? 0}</Text> elmas
               </Text>
               
               {/* Package List */}
@@ -473,7 +508,7 @@ const HomeScreen: React.FC<Props> = ({ navigation }) => {
               <View style={styles.primeFeatures}>
                 <View style={styles.primeFeatureRow}>
                   <Ionicons name="options" size={18} color="#FFD700" />
-                  <Text style={styles.primeFeatureText}>Yaş & Konum & Cinsiyet Filtreleme</Text>
+                  <Text style={styles.primeFeatureText}>Yaş & Konum Filtreleme</Text>
                 </View>
                 <View style={styles.primeFeatureRow}>
                   <Ionicons name="flash" size={18} color="#FFD700" />
@@ -508,7 +543,7 @@ const HomeScreen: React.FC<Props> = ({ navigation }) => {
                         styles.primeBadgeContainer,
                         pkg.highlight && styles.primeBadgeHighlight,
                       ]}>
-                        <Text style={styles.primeBadgeText}>{pkg.badge}</Text>
+                        <Text style={styles.primePackageBadgeText}>{pkg.badge}</Text>
                       </View>
                     )}
                     <Text style={[
@@ -727,9 +762,6 @@ const styles = StyleSheet.create({
     marginVertical: SPACING.sm,
   },
   matchButton: {
-    width: MATCH_BUTTON_SIZE,
-    height: MATCH_BUTTON_SIZE,
-    borderRadius: MATCH_BUTTON_SIZE / 2,
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: COLORS.primary,
@@ -752,7 +784,7 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     textAlign: 'center',
     marginTop: SPACING.sm,
-    marginBottom: SPACING.lg,
+    marginBottom: SPACING.sm,
   },
   // Settings Link
   settingsLink: {
@@ -1177,7 +1209,7 @@ const styles = StyleSheet.create({
   primeBadgeHighlight: {
     backgroundColor: '#FFD700',
   },
-  primeBadgeText: {
+  primePackageBadgeText: {
     fontSize: 8,
     fontWeight: '700',
     color: '#000',
