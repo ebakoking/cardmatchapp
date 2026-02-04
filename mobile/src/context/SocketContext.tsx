@@ -25,15 +25,27 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({
 
     s.on('connect', () => {
       setConnected(true);
+      console.log('[SocketContext] Socket BAĞLANDI! ID:', s.id);
     });
 
-    s.on('disconnect', () => {
+    s.on('connect_error', (err) => {
+      console.log('[SocketContext] Bağlantı HATASI:', err.message);
+    });
+
+    s.on('disconnect', (reason) => {
       setConnected(false);
+      console.log('[SocketContext] Bağlantı KOPTU:', reason);
+    });
+
+    s.on('match:found', (data: unknown) => {
+      console.log('[SocketContext] EŞLEŞME BULUNDU:', data);
     });
 
     return () => {
       s.off('connect');
+      s.off('connect_error');
       s.off('disconnect');
+      s.off('match:found');
     };
   }, [user?.id]); // ÖNEMLİ: user yerine user?.id - her user değişiminde değil, sadece user.id değişiminde çalışsın
 

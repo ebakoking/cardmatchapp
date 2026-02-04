@@ -214,7 +214,7 @@ const HomeScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   const onMatchPress = () => {
-    navigation.navigate('MatchQueue');
+    navigation.navigate('MatchQuestions');
   };
 
   // Elmas satın alma state

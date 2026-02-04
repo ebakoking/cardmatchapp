@@ -23,8 +23,10 @@ import mediaRouter from './routes/media';
 import verificationRouter from './routes/verification';
 import dailyRewardRouter from './routes/dailyReward';
 import genderFilterRouter from './routes/genderFilter';
+import matchRouter from './routes/match';
 import { startCronJobs, runMonthlySparkReset, cleanupExpiredBoosts } from './jobs/monthlySparkReset';
 import { registerMatchmakingHandlers } from './socket/matchmaking';
+import { registerMatchmakingV2Handlers, startMatchmakingV2 } from './socket/matchmakingV2';
 import { registerChatHandlers } from './socket/chat';
 import { registerFriendsHandlers } from './socket/friends';
 import { setIO } from './socket/io';
@@ -82,6 +84,7 @@ app.use('/api/media', mediaRouter);
 app.use('/api/verification', verificationRouter);
 app.use('/api/daily-reward', dailyRewardRouter);
 app.use('/api/gender-filter', genderFilterRouter);
+app.use('/api/match', matchRouter);
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
@@ -219,9 +222,11 @@ app.get('/api/features', (_req, res) => {
 // Socket.IO
 io.on('connection', (socket) => {
   registerMatchmakingHandlers(io, socket);
+  registerMatchmakingV2Handlers(io, socket);
   registerChatHandlers(io, socket);
   registerFriendsHandlers(io, socket);
 });
+startMatchmakingV2(io);
 
 // Admin endpoint: Manuel aylık spark reset (test için)
 app.post('/api/admin/spark-reset', async (req, res) => {

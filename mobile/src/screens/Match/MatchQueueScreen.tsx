@@ -24,14 +24,15 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 type Props = NativeStackScreenProps<ChatStackParamList, 'MatchQueue'>;
 
-const MatchQueueScreen: React.FC<Props> = ({ navigation }) => {
+const MatchQueueScreen: React.FC<Props> = ({ navigation, route }) => {
   const { user } = useAuth();
+  const fromV2 = route.params?.fromV2 === true;
   const [searching, setSearching] = useState(true);
   const [searchTime, setSearchTime] = useState(0);
   
   // Track if match was found - don't emit match:leave on successful match
   const matchFoundRef = useRef(false);
-  // Track if we're in queue - re-join on socket reconnect (server removes on disconnect)
+  // Track if we're in queue - re-join on socket reconnect (v1 only; v2 uses submit_answers)
   const isInQueueRef = useRef(false);
   
   // Animations
@@ -102,22 +103,35 @@ const MatchQueueScreen: React.FC<Props> = ({ navigation }) => {
   }, []);
 
   const handleMatchFound = useCallback((payload: {
-    matchId: string;
+    matchId?: string;
+    sessionId?: string;
+    partnerId?: string;
     partnerNickname: string;
     partnerAvatarId?: number;
     commonInterests?: string[];
     isBoostMatch?: boolean;
+    commonAnswers?: number;
   }) => {
     console.log('[MatchQueue] Match found:', payload);
     matchFoundRef.current = true;
     setSearching(false);
-    navigation.replace('CardGate', {
-      matchId: payload.matchId,
-      partnerNickname: payload.partnerNickname,
-      partnerAvatarId: payload.partnerAvatarId,
-      commonInterests: payload.commonInterests || [],
-      isBoostMatch: payload.isBoostMatch || false,
-    });
+    // v2: sessionId + partnerId → Chat; v1: matchId → CardGate
+    if (payload.sessionId && payload.partnerId) {
+      navigation.replace('Chat', {
+        sessionId: payload.sessionId,
+        partnerId: payload.partnerId,
+        partnerNickname: payload.partnerNickname,
+        partnerAvatarId: payload.partnerAvatarId,
+      });
+    } else {
+      navigation.replace('CardGate', {
+        matchId: payload.matchId!,
+        partnerNickname: payload.partnerNickname,
+        partnerAvatarId: payload.partnerAvatarId,
+        commonInterests: payload.commonInterests || [],
+        isBoostMatch: payload.isBoostMatch || false,
+      });
+    }
   }, [navigation]);
 
   const handleMatchBlocked = useCallback((data: { reason: string; message: string }) => {
@@ -144,15 +158,17 @@ const MatchQueueScreen: React.FC<Props> = ({ navigation }) => {
     if (!user) return;
 
     const handleConnect = () => {
-      if (isInQueueRef.current) {
-        console.log('[MatchQueue] Reconnected - re-joining match queue');
+      if (!fromV2 && isInQueueRef.current) {
+        console.log('[MatchQueue] Reconnected - re-joining match queue (v1)');
         socket.emit('match:join', { userId: user.id });
       }
     };
 
-    isInQueueRef.current = true;
-    console.log('[MatchQueue] Joining queue with userId:', user.id);
-    socket.emit('match:join', { userId: user.id });
+    if (!fromV2) {
+      isInQueueRef.current = true;
+      console.log('[MatchQueue] Joining queue (v1) with userId:', user.id);
+      socket.emit('match:join', { userId: user.id });
+    }
 
     socket.on('connect', handleConnect);
     socket.on('match:found', handleMatchFound);
@@ -170,7 +186,7 @@ const MatchQueueScreen: React.FC<Props> = ({ navigation }) => {
       socket.off('match:blocked', handleMatchBlocked);
       socket.off('match:ended', handleMatchEnded);
     };
-  }, [user?.id, handleMatchFound, handleMatchBlocked, handleMatchEnded]);
+  }, [user?.id, fromV2, handleMatchFound, handleMatchBlocked, handleMatchEnded]);
 
   const cancel = () => {
     const socket = getSocket();

@@ -66,6 +66,31 @@ export function registerFriendsHandlers(io: Server, socket: Socket) {
           },
         });
 
+        // Günlük arkadaş ekleme limiti: Free 10, Prime 50
+        const fromUserFull = await prisma.user.findUnique({
+          where: { id: fromUserId },
+          select: { isPrime: true, primeExpiry: true },
+        });
+        const isPrime = fromUserFull?.isPrime && fromUserFull?.primeExpiry && new Date() < new Date(fromUserFull.primeExpiry);
+        const maxLimit = isPrime ? 50 : 10;
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const dailyRow = await prisma.dailyFriendRequestCount.findUnique({
+          where: {
+            userId_date: { userId: fromUserId, date: today },
+          },
+        });
+        const countToday = dailyRow?.requestCount ?? 0;
+        if (countToday >= maxLimit) {
+          socket.emit('friend:request:error', {
+            code: 'DAILY_LIMIT',
+            message: isPrime
+              ? `Günlük arkadaş ekleme limitinize (${maxLimit}) ulaştınız.`
+              : `Günlük arkadaş ekleme limitinize (${maxLimit}) ulaştınız. Prime ile 50'ye kadar çıkarabilirsiniz.`,
+          });
+          return;
+        }
+
         if (existingRequest) {
           // Karşı taraftan gelen bekleyen istek varsa, otomatik kabul et
           if (existingRequest.fromUserId === toUserId) {
@@ -104,6 +129,19 @@ export function registerFriendsHandlers(io: Server, socket: Socket) {
         // Yeni istek oluştur
         const request = await prisma.friendRequest.create({
           data: { fromUserId, toUserId, status: 'PENDING' },
+        });
+
+        // Günlük sayacı artır
+        await prisma.dailyFriendRequestCount.upsert({
+          where: {
+            userId_date: { userId: fromUserId, date: today },
+          },
+          update: { requestCount: { increment: 1 } },
+          create: {
+            userId: fromUserId,
+            date: today,
+            requestCount: 1,
+          },
         });
 
         // Gönderene onay

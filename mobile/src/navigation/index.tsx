@@ -24,6 +24,7 @@ import AvatarSelectionScreen from '../screens/Onboarding/AvatarSelectionScreen';
 
 // Main Screens
 import HomeScreen from '../screens/Home/HomeScreen';
+import MatchQuestionsScreen from '../screens/Match/MatchQuestionsScreen';
 import MatchQueueScreen from '../screens/Match/MatchQueueScreen';
 import CardGateScreen from '../screens/Match/CardGateScreen';
 import MatchSettingsScreen from '../screens/Match/MatchSettingsScreen';
@@ -69,7 +70,8 @@ export type AuthStackParamList = {
 
 export type ChatStackParamList = {
   HomeMain: undefined;
-  MatchQueue: undefined;
+  MatchQuestions: undefined;
+  MatchQueue: { fromV2?: boolean } | undefined;
   MatchSettings: undefined;
   CardGate: { 
     matchId: string; 
@@ -147,6 +149,7 @@ function ChatStackNavigator() {
   return (
     <ChatStack.Navigator screenOptions={{ headerShown: false }}>
       <ChatStack.Screen name="HomeMain" component={HomeScreen} />
+      <ChatStack.Screen name="MatchQuestions" component={MatchQuestionsScreen} />
       <ChatStack.Screen name="MatchQueue" component={MatchQueueScreen} />
       <ChatStack.Screen name="MatchSettings" component={MatchSettingsScreen} />
       <ChatStack.Screen name="CardGate" component={CardGateScreen} />

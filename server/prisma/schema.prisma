@@ -208,6 +208,9 @@ model User {
   redeemRequests         RedeemRequest[]
   rewardClaims           RewardClaim[]
   genderFilterPurchases  GenderFilterPurchase[] @relation("GenderFilterPurchases")
+  matchQueues            MatchQueue[]           @relation("UserMatchQueues")
+  userMatchPreference    UserMatchPreference?   @relation("UserMatchPreference")
+  dailyFriendRequestCounts DailyFriendRequestCount[] @relation("DailyFriendRequestCounts")
 
   // ============ PERFORMANS İNDEKSLERİ ============
   @@index([status])                           // Aktif kullanıcı sorguları
@@ -696,6 +699,105 @@ model MonthlyLeaderboard {
   @@unique([userId, month, year])  // Her kullanıcı için ayda bir kayıt
   @@index([month, year])
   @@index([rank])
+}
+
+// ============ YENİ EŞLEŞME SİSTEMİ – SORU BANKASI ============
+model MatchQuestion {
+  id          String   @id @default(uuid())
+  questionText String  // Soru metni (TR)
+  orderIndex   Int     // 1-5 sıra
+  isActive     Boolean @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  options MatchQuestionOption[]
+
+  @@index([orderIndex])
+  @@index([isActive])
+}
+
+model MatchQuestionOption {
+  id          String   @id @default(uuid())
+  questionId  String
+  optionText  String   // Seçenek metni
+  orderIndex  Int      // 0-3 veya 0-4
+  createdAt   DateTime @default(now())
+
+  question    MatchQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+}
+
+// ============ YENİ EŞLEŞME SİSTEMİ – KUYRUK ============
+enum MatchQueueStatus {
+  WAITING
+  MATCHED
+  CANCELLED
+}
+
+model MatchQueue {
+  id               String           @id @default(uuid())
+  userId           String
+  enteredAt        DateTime         @default(now())
+  priorityScore    Int              @default(0)  // Hesaplanan öncelik skoru
+  filters          Json?            // { gender, age, distance, minCommon } snapshot
+  status           MatchQueueStatus @default(WAITING)
+  matchedWithUserId String?         // Eşleşince dolu
+  matchedAt        DateTime?       // Eşleşme zamanı
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  user     User              @relation("UserMatchQueues", fields: [userId], references: [id], onDelete: Cascade)
+  answers  MatchQueueAnswer[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([enteredAt])
+  @@index([priorityScore])
+  @@index([status, priorityScore])  // 100k: kuyruk taraması için composite
+}
+
+model MatchQueueAnswer {
+  id           String   @id @default(uuid())
+  matchQueueId String
+  questionId   String
+  optionId     String   // MatchQuestionOption.id
+  createdAt    DateTime @default(now())
+
+  matchQueue MatchQueue        @relation(fields: [matchQueueId], references: [id], onDelete: Cascade)
+
+  @@unique([matchQueueId, questionId])  // Her soruya 1 cevap
+  @@index([matchQueueId])
+  @@index([questionId])
+}
+
+// ============ YENİ EŞLEŞME SİSTEMİ – KULLANICI TERCİHİ ============
+model UserMatchPreference {
+  id                   String   @id @default(uuid())
+  userId               String   @unique
+  minimumCommonAnswers Int      @default(1)  // 1-5 arası
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  user User @relation("UserMatchPreference", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ============ GÜNLÜK ARKADAŞ EKLEME SAYACI ============
+model DailyFriendRequestCount {
+  id           String   @id @default(uuid())
+  userId       String
+  date         DateTime @db.Date  // Gün bazlı (00:00)
+  requestCount Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation("DailyFriendRequestCounts", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+  @@index([userId])
+  @@index([date])
 }
 
 // ============ BOOST SATIN ALMA GEÇMİŞİ ============

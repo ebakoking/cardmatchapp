@@ -14,7 +14,9 @@ const HEARTBEAT_MS = 30000;
 export function getSocket() {
   if (!socket) {
     if (!socketUrl) {
-      console.error('❌ SOCKET_URL tanımlı değil! .env dosyasını kontrol edin.');
+      console.error('❌ SOCKET_URL tanımlı değil! .env / app.config.js extra.socketUrl kontrol et.');
+    } else {
+      console.log('[Socket] URL kullanılıyor:', socketUrl.startsWith('https') ? 'HTTPS' : socketUrl.startsWith('http') ? 'HTTP' : 'custom');
     }
     socket = io(socketUrl || '', {
       transports: ['websocket'],
@@ -22,11 +24,17 @@ export function getSocket() {
       reconnection: true,
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
+      autoConnect: true,
+    });
+
+    // İlk bağlantı hatası (TestFlight / Safari console'da görünür)
+    socket.on('connect_error', (err) => {
+      console.log('[Socket] Bağlantı HATASI:', err.message);
     });
 
     // 🔒 MEMORY LEAK FIX: Connect event - rejoin user room
     socket.on('connect', () => {
-      console.log('[Socket] ✅ Connected');
+      console.log('[Socket] ✅ BAĞLANDI – ID:', socket?.id);
 
       // Heartbeat restart
       if (heartbeatInterval) clearInterval(heartbeatInterval);
@@ -43,7 +51,7 @@ export function getSocket() {
 
     // Disconnect event - cleanup heartbeat only
     socket.on('disconnect', (reason) => {
-      console.log('[Socket] ❌ Disconnected:', reason);
+      console.log('[Socket] ❌ Bağlantı KOPTU:', reason);
       if (heartbeatInterval) {
         clearInterval(heartbeatInterval);
         heartbeatInterval = null;

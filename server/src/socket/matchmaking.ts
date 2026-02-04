@@ -315,6 +315,7 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
           entry.filterMaxAge = user.filterMaxAge;
           entry.filterMaxDistance = user.filterMaxDistance;
           socket.emit('match:searching');
+          console.log('[Matchmaking] Queue şu an:', matchmakingQueue.length, 'kişi (güncelleme sonrası)');
           await tryMatch(io);
           return;
         }
@@ -389,6 +390,7 @@ export function registerMatchmakingHandlers(io: Server, socket: Socket) {
         };
         
         matchmakingQueue.push(queueEntry);
+        console.log('[Matchmaking] Queue şu an:', matchmakingQueue.length, 'kişi');
         
         console.log(`[Matchmaking] User added to queue:`, {
           id: userId,
@@ -891,14 +893,14 @@ async function createMatch(
 }
 
 async function tryMatch(io: Server) {
-  console.log('[Matchmaking] tryMatch called, queue size:', matchmakingQueue.length);
+  console.log('[Matchmaking] tryMatch called – Queue şu an:', matchmakingQueue.length, 'kişi');
   
   if (matchmakingQueue.length < 2) {
     console.log('[Matchmaking] Not enough users in queue, waiting...');
     return;
   }
 
-  console.log('[Matchmaking] Queue users:', matchmakingQueue.map(q => ({ 
+  console.log('[Matchmaking] Checking match pairs. Queue users:', matchmakingQueue.map(q => ({ 
     userId: q.userId, 
     isBoostActive: q.isBoostActive,
     totalSparks: q.totalSparksEarned 
@@ -1067,6 +1069,7 @@ async function tryMatch(io: Server) {
         userBFilter: b.filterGender || 'BOTH',
       });
 
+      console.log('[Matchmaking] Checking pair (filters):', a.userId, 'vs', b.userId);
       if (!canMatchWithFilters(a, b)) continue;
 
       candidates.push({ entry: b, user: userB });

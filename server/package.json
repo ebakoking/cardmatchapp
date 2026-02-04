@@ -11,6 +11,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:generate": "prisma generate",
     "prisma:seed": "ts-node prisma/seed.ts",
+    "prisma:seed-match": "ts-node prisma/seed-match-questions.ts",
     "load-test": "ts-node scripts/load-test.ts",
     "load-test:100": "ts-node scripts/load-test.ts 100",
     "load-test:1000": "ts-node scripts/load-test.ts 1000",

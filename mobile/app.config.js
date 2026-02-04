@@ -13,7 +13,7 @@ export default {
   expo: {
     name: 'CardMatch',
     slug: 'cardmatch',
-    version: '1.0.14',
+    version: '1.0.17',
     scheme: 'cardmatch',
     orientation: 'portrait',
     icon: './assets/icon.png',
@@ -26,7 +26,7 @@ export default {
     ios: {
       supportsTablet: false,
       bundleIdentifier: 'com.cardmatch.app',
-      buildNumber: '1.0.14',
+      buildNumber: '1.0.17',
       config: {
         usesNonExemptEncryption: false,
       },
